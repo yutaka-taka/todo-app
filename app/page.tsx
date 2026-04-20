@@ -110,7 +110,6 @@ export default function Home() {
         {/* Search section */}
         <div className="card space-y-3">
           <div className="flex items-center gap-1.5 mb-1">
-            <span className="text-base">🔍</span>
             <h2 className="text-sm font-bold text-gray-700">分別調査</h2>
           </div>
 
@@ -164,9 +163,12 @@ export default function Home() {
                     </div>
                     <button
                       onClick={() => handleOpenDetail(item)}
-                      className="flex-shrink-0 text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded-lg transition-colors"
+                      className="flex-shrink-0 bg-blue-500 hover:bg-blue-600 text-white w-8 h-8 rounded-lg transition-colors flex items-center justify-center"
+                      aria-label="詳細"
                     >
-                      詳細
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 1116.65 16.65z" />
+                      </svg>
                     </button>
                   </div>
                 ))
