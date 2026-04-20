@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import { Region, GarbageItem } from '@/types';
-import { searchGarbage } from '@/lib/garbageData';
+import { searchGarbage, garbageData } from '@/lib/garbageData';
 import DetailModal from '@/components/DetailModal';
 import CalendarModal from '@/components/CalendarModal';
 import RegionSelectModal from '@/components/RegionSelectModal';
@@ -20,6 +20,20 @@ const categoryBadgeColors: Record<string, string> = {
   '拠点回収': 'bg-cyan-100 text-cyan-700',
 };
 
+// DBのgarbageItemをGarbageItem型に変換
+function dbRowToGarbageItem(row: Record<string, unknown>): GarbageItem {
+  return {
+    id: String(row.id ?? ''),
+    name: String(row.name ?? ''),
+    keywords: Array.isArray(row.keywords) ? row.keywords : [],
+    category: (row.category as GarbageItem['category']) ?? '燃えるごみ',
+    categoryColor: '#64748b',
+    summary: String(row.summary ?? ''),
+    details: String(row.details ?? ''),
+    disposalMethod: String(row.disposal_method ?? ''),
+  };
+}
+
 export default function Home() {
   const router = useRouter();
   const [region, setRegion] = useState<Region | null>(null);
@@ -28,6 +42,7 @@ export default function Home() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<GarbageItem[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [selectedItem, setSelectedItem] = useState<GarbageItem | null>(null);
 
   const [showDetail, setShowDetail] = useState(false);
@@ -37,6 +52,7 @@ export default function Home() {
   const [showAdminPw, setShowAdminPw] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState('');
+  const [pdfTitle, setPdfTitle] = useState('');
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -51,11 +67,35 @@ export default function Home() {
     setRegionLoaded(true);
   }, []);
 
-  const handleSearch = () => {
-    if (!query.trim()) return;
-    const res = searchGarbage(query.trim());
-    setResults(res);
+  const handleSearch = async (q?: string) => {
+    const searchQuery = (q ?? query).trim();
+    if (!searchQuery) return;
+    setSearching(true);
     setHasSearched(true);
+
+    // 1. まず組み込みデータを検索
+    const localResults = searchGarbage(searchQuery);
+
+    // 2. DBからも検索
+    try {
+      const res = await fetch(`/api/db/garbage?q=${encodeURIComponent(searchQuery)}`);
+      const data = await res.json();
+      const dbItems: GarbageItem[] = (data.items ?? []).map(dbRowToGarbageItem);
+
+      // ローカルにない品目をDBから追加
+      const localNames = new Set(localResults.map(i => i.name));
+      const merged = [
+        ...localResults,
+        ...dbItems.filter(i => !localNames.has(i.name)),
+      ];
+
+      // 完全一致がある場合は1件だけ
+      const exactMatch = merged.find(i => i.name === searchQuery);
+      setResults(exactMatch ? [exactMatch] : merged.slice(0, 3));
+    } catch {
+      setResults(localResults);
+    }
+    setSearching(false);
   };
 
   const handleRegionSelect = (r: Region) => {
@@ -64,12 +104,10 @@ export default function Home() {
     setShowRegion(false);
   };
 
-  const handleCameraIdentified = (name: string) => {
+  const handleCameraIdentified = async (name: string) => {
     setQuery(name);
-    const res = searchGarbage(name);
-    setResults(res);
-    setHasSearched(true);
     setShowCamera(false);
+    await handleSearch(name);
   };
 
   const handleOpenDetail = (item: GarbageItem) => {
@@ -77,10 +115,27 @@ export default function Home() {
     setShowDetail(true);
   };
 
-  const handleOpenPDF = () => {
-    const url = localStorage.getItem('pdfUrl') ||
-      'https://www.city.nagano.nagano.jp/documents/238/r8hozonban.pdf';
-    setPdfUrl(url);
+  const handleOpenPDF = async () => {
+    if (!region) return;
+
+    // DBから地域に対応するPDFを検索
+    try {
+      const res = await fetch(`/api/db/pdfs?region=${encodeURIComponent(region.commonName)}`);
+      const data = await res.json();
+      if (data.pdfs && data.pdfs.length > 0) {
+        const pdf = data.pdfs[0];
+        setPdfUrl(pdf.pdf_url);
+        setPdfTitle(pdf.pdf_title || `年間収集予定表（${region.commonName}）`);
+        setShowPdf(true);
+        return;
+      }
+    } catch { /* fallthrough */ }
+
+    // フォールバック: 管理画面で設定したURL
+    const fallback = localStorage.getItem('infoUrl') ||
+      'https://www.city.nagano.nagano.jp/n121500/contents/p006210.html';
+    setPdfUrl(fallback);
+    setPdfTitle(`年間収集予定表（${region.commonName}）`);
     setShowPdf(true);
   };
 
@@ -113,9 +168,7 @@ export default function Home() {
       <div className="px-4 py-5 space-y-4">
         {/* Search section */}
         <div className="card space-y-3">
-          <div className="flex items-center gap-1.5 mb-1">
-            <h2 className="text-sm font-bold text-gray-700">分別調査</h2>
-          </div>
+          <h2 className="text-sm font-bold text-gray-700">分別調査</h2>
 
           {/* Search row */}
           <div className="flex gap-2">
@@ -129,13 +182,18 @@ export default function Home() {
               className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 bg-gray-50"
             />
             <button
-              onClick={handleSearch}
+              onClick={() => handleSearch()}
+              disabled={searching}
               className="bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white w-11 h-11 rounded-xl flex items-center justify-center transition-colors flex-shrink-0"
               aria-label="検索"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 1116.65 16.65z" />
-              </svg>
+              {searching ? (
+                <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+              ) : (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 1116.65 16.65z" />
+                </svg>
+              )}
             </button>
           </div>
 
@@ -159,9 +217,11 @@ export default function Home() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-sm text-gray-800">{item.name}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${categoryBadgeColors[item.category] ?? 'bg-gray-100 text-gray-600'}`}>
-                          {item.category}
-                        </span>
+                        {item.category && (
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${categoryBadgeColors[item.category] ?? 'bg-gray-100 text-gray-600'}`}>
+                            {item.category}
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.summary}</p>
                     </div>
@@ -185,7 +245,8 @@ export default function Home() {
         <div className="grid grid-cols-2 gap-3">
           <button
             onClick={handleOpenPDF}
-            className="card flex flex-col items-center gap-2 py-5 hover:shadow-md active:scale-95 transition-all"
+            disabled={!region}
+            className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
           >
             <span className="text-3xl">📄</span>
             <span className="text-xs font-semibold text-gray-700 text-center leading-tight">年間収集<br/>予定表</span>
@@ -194,9 +255,7 @@ export default function Home() {
           <button
             onClick={() => region && setShowCalendar(true)}
             disabled={!region}
-            className={`card flex flex-col items-center gap-2 py-5 transition-all ${
-              region ? 'hover:shadow-md active:scale-95' : 'opacity-50'
-            }`}
+            className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
           >
             <span className="text-3xl">📅</span>
             <span className="text-xs font-semibold text-gray-700 text-center leading-tight">収集<br/>カレンダー</span>
@@ -219,10 +278,9 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Footer info */}
         {region && (
           <div className="text-center">
-            <p className="text-xs text-gray-400">選択中の地域: {region.adminName}</p>
+            <p className="text-xs text-gray-400">選択中: {region.adminName}（{region.commonName}）</p>
           </div>
         )}
       </div>
@@ -255,7 +313,7 @@ export default function Home() {
         />
       )}
       {showPdf && pdfUrl && (
-        <PdfModal url={pdfUrl} title="年間収集予定表" onClose={() => setShowPdf(false)} />
+        <PdfModal url={pdfUrl} title={pdfTitle} onClose={() => setShowPdf(false)} />
       )}
     </>
   );

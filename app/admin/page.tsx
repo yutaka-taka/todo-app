@@ -46,14 +46,41 @@ export default function AdminPage() {
 
       if (!res.ok) throw new Error(data.error ?? 'エラーが発生しました');
 
+      // DBに保存
       if (data.items && data.items.length > 0) {
-        localStorage.setItem('fetchedGarbageData', JSON.stringify(data.items));
+        await fetch('/api/db/garbage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: data.items, sourceUrl: infoUrl.trim() }),
+        });
+      }
+      // 地区PDFリンクをDBに保存
+      if (data.pdfs && data.pdfs.length > 0) {
+        await fetch('/api/db/pdfs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pdfs: data.pdfs, sourceUrl: infoUrl.trim() }),
+        });
+        // region_schedulesにも保存
+        for (const pdf of data.pdfs) {
+          await fetch('/api/db/schedules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              regionKey: pdf.regionName,
+              calendarGroup: pdf.calendarGroup ?? 0,
+              pdfUrl: pdf.pdfUrl,
+              pdfTitle: pdf.pdfTitle,
+            }),
+          }).catch(() => null);
+        }
       }
       const ts = new Date().toLocaleString('ja-JP');
       localStorage.setItem('lastUpdated', ts);
       setLastUpdated(ts);
       setUpdateStatus('success');
-      setUpdateMessage(`${data.items?.length ?? 0}件の情報を更新しました`);
+      const pdfCount = data.pdfs?.length ?? 0;
+      setUpdateMessage(`${data.insertedItems ?? data.items?.length ?? 0}件のごみ情報、${pdfCount}件の地区PDFをDBに保存しました`);
     } catch (e) {
       setUpdateStatus('error');
       setUpdateMessage(e instanceof Error ? e.message : '更新に失敗しました');

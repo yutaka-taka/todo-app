@@ -24,7 +24,8 @@ export default function CalendarModal({ region, onClose }: Props) {
     const idx = currentMonth - 1;
     const el = monthRefs.current[idx];
     if (el && scrollRef.current) {
-      scrollRef.current.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' });
+      // 当月の先頭が見えるようにスクロール（即座に・アニメーションなし）
+      scrollRef.current.scrollTop = Math.max(0, el.offsetTop - 8);
     }
   }, [currentMonth]);
 

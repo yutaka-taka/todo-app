@@ -33,3 +33,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+
+# sensitive files / screenshots
+API_Key.txt
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+.claude/
+SnapCrab_*

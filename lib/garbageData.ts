@@ -340,16 +340,22 @@ export function searchGarbage(query: string): GarbageItem[] {
   for (const item of garbageData) {
     let score = 0;
     if (item.name.toLowerCase() === q) score = 100;
+    else if (item.keywords.some(k => k.toLowerCase() === q)) score = 90;
     else if (item.name.toLowerCase().includes(q)) score = 80;
-    else if (item.keywords.some(k => k.toLowerCase() === q)) score = 70;
     else if (item.keywords.some(k => k.toLowerCase().includes(q))) score = 50;
     else if (item.category.toLowerCase().includes(q)) score = 30;
     else if (item.summary.toLowerCase().includes(q)) score = 10;
     if (score > 0) scored.push({ item, score });
   }
 
-  return scored
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
-    .map(s => s.item);
+  const sorted = scored.sort((a, b) => b.score - a.score);
+
+  // 完全一致がある場合はその1件だけを返す
+  if (sorted.length > 0 && sorted[0].score >= 90) {
+    const topScore = sorted[0].score;
+    return sorted.filter(s => s.score === topScore).map(s => s.item);
+  }
+
+  // 部分一致は最大3件まで
+  return sorted.slice(0, 3).map(s => s.item);
 }

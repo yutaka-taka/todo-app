@@ -90,7 +90,7 @@ export default function RegionSelectModal({ currentRegion, canClose, onSelect, o
                 : 'bg-gray-100 text-gray-400 cursor-not-allowed'
             }`}
           >
-            {selected ? `「${selected.adminName}（${selected.commonName}）」を選択する` : '地域を選んでください'}
+            {selected ? `「${selected.commonName}」を選択する` : '地域を選んでください'}
           </button>
         </div>
       </div>
