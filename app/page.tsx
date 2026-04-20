@@ -7,6 +7,7 @@ import CalendarModal from '@/components/CalendarModal';
 import RegionSelectModal from '@/components/RegionSelectModal';
 import CameraModal from '@/components/CameraModal';
 import AdminPasswordModal from '@/components/AdminPasswordModal';
+import PdfModal from '@/components/PdfModal';
 import { useRouter } from 'next/navigation';
 
 const categoryBadgeColors: Record<string, string> = {
@@ -34,6 +35,8 @@ export default function Home() {
   const [showRegion, setShowRegion] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showAdminPw, setShowAdminPw] = useState(false);
+  const [showPdf, setShowPdf] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState('');
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -75,9 +78,10 @@ export default function Home() {
   };
 
   const handleOpenPDF = () => {
-    const pdfUrl = localStorage.getItem('pdfUrl') ||
-      'https://www.city.nagano.nagano.jp/n121500/contents/p006210.html';
-    window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+    const url = localStorage.getItem('pdfUrl') ||
+      'https://www.city.nagano.nagano.jp/documents/238/r8hozonban.pdf';
+    setPdfUrl(url);
+    setShowPdf(true);
   };
 
   if (!regionLoaded) return null;
@@ -249,6 +253,9 @@ export default function Home() {
           onSuccess={() => { setShowAdminPw(false); router.push('/admin'); }}
           onClose={() => setShowAdminPw(false)}
         />
+      )}
+      {showPdf && pdfUrl && (
+        <PdfModal url={pdfUrl} title="年間収集予定表" onClose={() => setShowPdf(false)} />
       )}
     </>
   );
