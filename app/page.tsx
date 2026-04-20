@@ -191,7 +191,8 @@ export default function Home() {
                 <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
               ) : (
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 1116.65 16.65z" />
+                  <circle cx="11" cy="11" r="7" strokeWidth={2} />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35" />
                 </svg>
               )}
             </button>
@@ -227,12 +228,9 @@ export default function Home() {
                     </div>
                     <button
                       onClick={() => handleOpenDetail(item)}
-                      className="flex-shrink-0 bg-blue-500 hover:bg-blue-600 text-white w-8 h-8 rounded-lg transition-colors flex items-center justify-center"
-                      aria-label="詳細"
+                      className="flex-shrink-0 bg-blue-500 hover:bg-blue-600 text-white px-3 h-8 rounded-lg transition-colors text-xs font-semibold"
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 1116.65 16.65z" />
-                      </svg>
+                      詳細
                     </button>
                   </div>
                 ))
@@ -280,7 +278,7 @@ export default function Home() {
 
         {region && (
           <div className="text-center">
-            <p className="text-xs text-gray-400">選択中: {region.adminName}（{region.commonName}）</p>
+            <p className="text-xs text-gray-400">選択中: {region.commonName}</p>
           </div>
         )}
       </div>

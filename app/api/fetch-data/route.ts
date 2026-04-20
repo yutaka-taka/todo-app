@@ -3,6 +3,9 @@ import { parse } from 'node-html-parser';
 import Anthropic from '@anthropic-ai/sdk';
 import { initDb, getDb } from '@/lib/db';
 
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 interface ParsedItem {
   name: string;
   category: string;
@@ -19,67 +22,136 @@ interface RegionPdf {
   calendarGroup: number;
 }
 
-async function extractFromPdf(pdfUrl: string): Promise<{ items: ParsedItem[]; pdfs: RegionPdf[] }> {
+async function extractFromPdf(
+  pdfUrl: string
+): Promise<{ items: ParsedItem[]; pdfs: RegionPdf[]; debug: string[] }> {
+  const debug: string[] = [];
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { items: [], pdfs: [] };
-
-  const res = await fetch(pdfUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  if (!res.ok) throw new Error(`PDF取得失敗: ${res.status}`);
-
-  const buffer = await res.arrayBuffer();
-  const base64 = Buffer.from(buffer).toString('base64');
-
-  const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    messages: [{
-      role: 'user',
-      content: [
-        {
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: base64 },
-        },
-        {
-          type: 'text',
-          text: `このPDFはごみの分別・出し方に関する長野市の資料です。
-以下のJSON形式で全てのごみ品目を抽出してください。JSONのみ返してください。
-
-{"items": [
-  {
-    "name": "品目名（例：ペットボトル）",
-    "category": "分別区分（例：資源ごみ）",
-    "summary": "一行概要",
-    "details": "詳細な出し方・注意事項",
-    "disposalMethod": "出し方",
-    "keywords": ["関連キーワード1", "関連キーワード2"]
+  if (!apiKey) {
+    debug.push('ANTHROPIC_API_KEY が設定されていません');
+    return { items: [], pdfs: [], debug };
   }
-]}
 
-PDFに記載されている全品目を含めてください。品目が見当たらない場合は {"items":[]} を返してください。`,
-        },
-      ],
-    }],
-  });
+  debug.push(`PDFを取得中: ${pdfUrl}`);
+  let pdfRes: Response;
+  try {
+    pdfRes = await fetch(pdfUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Accept: 'application/pdf,*/*',
+      },
+    });
+  } catch (e) {
+    debug.push(`PDFフェッチ例外: ${e}`);
+    return { items: [], pdfs: [], debug };
+  }
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { items: [], pdfs: [] };
+  debug.push(`HTTPステータス: ${pdfRes.status} ${pdfRes.statusText}`);
+  debug.push(`Content-Type: ${pdfRes.headers.get('content-type') ?? 'unknown'}`);
+
+  if (!pdfRes.ok) {
+    debug.push(`PDFの取得に失敗しました`);
+    return { items: [], pdfs: [], debug };
+  }
+
+  const contentType = pdfRes.headers.get('content-type') ?? '';
+  // PDFではなくHTMLが返ってきた場合（リダイレクトやエラーページ）
+  if (contentType.includes('text/html')) {
+    debug.push('PDFではなくHTMLが返却されました。URLを確認してください。');
+    return { items: [], pdfs: [], debug };
+  }
+
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await pdfRes.arrayBuffer();
+    debug.push(`PDFサイズ: ${Math.round(buffer.byteLength / 1024)} KB`);
+  } catch (e) {
+    debug.push(`ArrayBuffer変換失敗: ${e}`);
+    return { items: [], pdfs: [], debug };
+  }
+
+  if (buffer.byteLength > 20 * 1024 * 1024) {
+    debug.push('PDFが20MBを超えるため処理をスキップします');
+    return { items: [], pdfs: [], debug };
+  }
+
+  const base64 = Buffer.from(buffer).toString('base64');
+  debug.push('Claude APIにPDFを送信中...');
 
   try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8192,
+      messages: [{
+        role: 'user',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+          } as any,
+          {
+            type: 'text',
+            text: `このPDFはごみの分別・出し方に関する長野市の公式資料です。
+
+PDF内に記載されている**全ての**ごみ品目を抽出して、以下のJSON形式で返してください。
+必ずJSON形式のみで返答し、前置きや説明文は不要です。
+
+{
+  "items": [
+    {
+      "name": "品目名（具体的に。例：ペットボトル、アルミ缶、新聞紙）",
+      "category": "分別区分（例：資源ごみ、燃えるごみ、燃えないごみ、有害ごみ、粗大ごみ）",
+      "summary": "分別方法の一行概要",
+      "details": "詳細な出し方・注意事項（複数行OK）",
+      "disposalMethod": "具体的な出し方",
+      "keywords": ["関連キーワード", "別名", "通称"]
+    }
+  ]
+}
+
+品目が見つからない場合は {"items": []} を返してください。`,
+          },
+        ],
+      }],
+    });
+
+    const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
+    debug.push(`Claude応答長: ${rawText.length} 文字`);
+    debug.push(`応答先頭: ${rawText.slice(0, 100)}`);
+
+    // JSON抽出（コードブロック対応）
+    const cleaned = rawText
+      .replace(/^```json\s*/m, '')
+      .replace(/^```\s*/m, '')
+      .replace(/```\s*$/m, '')
+      .trim();
+
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      debug.push('JSONが見つかりませんでした');
+      return { items: [], pdfs: [], debug };
+    }
+
     const parsed = JSON.parse(jsonMatch[0]);
-    return { items: parsed.items ?? [], pdfs: [] };
-  } catch {
-    return { items: [], pdfs: [] };
+    const items: ParsedItem[] = (parsed.items ?? []).filter((i: ParsedItem) => i.name?.trim());
+    debug.push(`抽出品目数: ${items.length}`);
+    return { items, pdfs: [], debug };
+  } catch (e) {
+    debug.push(`Claude API エラー: ${e instanceof Error ? e.message : String(e)}`);
+    return { items: [], pdfs: [], debug };
   }
 }
 
-async function extractFromHtml(url: string, html: string): Promise<{ items: ParsedItem[]; pdfs: RegionPdf[] }> {
+async function extractFromHtml(
+  url: string,
+  html: string
+): Promise<{ items: ParsedItem[]; pdfs: RegionPdf[] }> {
   const root = parse(html);
   const items: ParsedItem[] = [];
   const pdfs: RegionPdf[] = [];
 
-  // Extract region-specific PDF links
   const baseUrl = new URL(url);
   const links = root.querySelectorAll('a[href]');
   for (const link of links) {
@@ -90,12 +162,14 @@ async function extractFromHtml(url: string, html: string): Promise<{ items: Pars
     const isPdf = href.toLowerCase().includes('.pdf') || text.includes('PDF');
     if (!isPdf) continue;
 
-    // Try to extract region name from link text
-    // e.g. "ごみ年間収集予定表(浅川)（PDF：312KB）"
-    const regionMatch = text.match(/[（(]([^）)（(（PpDdFf：:\d]+?)[）)]/);
-    if (regionMatch && regionMatch[1].trim() && !regionMatch[1].includes('PDF') && !regionMatch[1].match(/^\d/)) {
+    const regionMatch = text.match(/[（(]([^）)（(PpDdFf：:\d]+?)[）)]/);
+    if (
+      regionMatch &&
+      regionMatch[1].trim() &&
+      !regionMatch[1].includes('PDF') &&
+      !regionMatch[1].match(/^\d/)
+    ) {
       const fullUrl = href.startsWith('http') ? href : new URL(href, baseUrl).toString();
-      // Extract calendar group from link or surrounding text
       const groupMatch = (link.parentNode?.text ?? '').match(/第?(\d+)(?:区|グループ|番)/);
       pdfs.push({
         regionName: regionMatch[1].trim(),
@@ -104,7 +178,6 @@ async function extractFromHtml(url: string, html: string): Promise<{ items: Pars
         calendarGroup: groupMatch ? parseInt(groupMatch[1]) : 0,
       });
     } else if (text.includes('年間収集予定表') || text.includes('収集カレンダー')) {
-      // Generic schedule PDF
       const fullUrl = href.startsWith('http') ? href : new URL(href, baseUrl).toString();
       pdfs.push({
         regionName: text.replace(/[（(）)\s]/g, '').replace(/PDF.*$/, '').trim() || '全域',
@@ -115,7 +188,6 @@ async function extractFromHtml(url: string, html: string): Promise<{ items: Pars
     }
   }
 
-  // Parse HTML tables for garbage items
   const rows = root.querySelectorAll('table tr');
   for (const row of rows) {
     const cells = row.querySelectorAll('td, th');
@@ -134,7 +206,6 @@ async function extractFromHtml(url: string, html: string): Promise<{ items: Pars
     });
   }
 
-  // Fallback: definition lists
   if (items.length === 0) {
     root.querySelectorAll('dt').forEach(dt => {
       const dd = dt.nextElementSibling;
@@ -155,12 +226,14 @@ export async function POST(req: NextRequest) {
   const { url } = await req.json();
   if (!url) return Response.json({ error: 'URLが指定されていません' }, { status: 400 });
 
+  const debugLog: string[] = [];
+
   try {
     await initDb();
 
-    const headRes = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } }).catch(() => null);
-    const contentType = headRes?.headers.get('content-type') ?? '';
-    const isPdf = url.toLowerCase().endsWith('.pdf') || contentType.includes('application/pdf');
+    const isPdf = url.toLowerCase().includes('.pdf');
+    debugLog.push(`URL: ${url}`);
+    debugLog.push(`PDF判定: ${isPdf}`);
 
     let items: ParsedItem[] = [];
     let pdfs: RegionPdf[] = [];
@@ -169,23 +242,38 @@ export async function POST(req: NextRequest) {
       const result = await extractFromPdf(url);
       items = result.items;
       pdfs = result.pdfs;
+      debugLog.push(...result.debug);
     } else {
-      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 0 } });
-      if (!res.ok) return Response.json({ error: `ページ取得失敗 (${res.status})` }, { status: 502 });
+      debugLog.push('HTMLページとして処理');
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        cache: 'no-store',
+      });
+      debugLog.push(`HTTPステータス: ${res.status}`);
+      if (!res.ok) return Response.json({ error: `ページ取得失敗 (${res.status})`, debug: debugLog }, { status: 502 });
       const html = await res.text();
       const result = await extractFromHtml(url, html);
       items = result.items;
       pdfs = result.pdfs;
+      debugLog.push(`抽出品目: ${items.length}件、地区PDF: ${pdfs.length}件`);
     }
 
-    // Store in DB
     const sql = getDb();
     let insertedItems = 0;
-    for (const item of items.slice(0, 200)) {
-      if (!item.name) continue;
+    for (const item of items.slice(0, 300)) {
+      if (!item.name?.trim()) continue;
       await sql`
         INSERT INTO garbage_items (name, category, summary, details, disposal_method, keywords, source_url, updated_at)
-        VALUES (${item.name}, ${item.category}, ${item.summary}, ${item.details}, ${item.disposalMethod}, ${item.keywords}, ${url}, NOW())
+        VALUES (
+          ${item.name.trim()},
+          ${(item.category ?? '').trim()},
+          ${(item.summary ?? '').trim()},
+          ${(item.details ?? '').trim()},
+          ${(item.disposalMethod ?? '').trim()},
+          ${item.keywords ?? []},
+          ${url},
+          NOW()
+        )
         ON CONFLICT DO NOTHING
       `;
       insertedItems++;
@@ -203,16 +291,20 @@ export async function POST(req: NextRequest) {
       insertedPdfs++;
     }
 
+    debugLog.push(`DB保存: ごみ品目 ${insertedItems}件、地区PDF ${insertedPdfs}件`);
+
     return Response.json({
-      items: items.slice(0, 200),
+      items: items.slice(0, 300),
       pdfs,
       insertedItems,
       insertedPdfs,
       count: items.length,
       source: url,
+      debug: debugLog,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : '不明なエラー';
-    return Response.json({ error: `取得エラー: ${msg}` }, { status: 500 });
+    debugLog.push(`致命的エラー: ${msg}`);
+    return Response.json({ error: `取得エラー: ${msg}`, debug: debugLog }, { status: 500 });
   }
 }

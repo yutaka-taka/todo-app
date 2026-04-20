@@ -23,9 +23,8 @@ export default function CalendarModal({ region, onClose }: Props) {
   useEffect(() => {
     const idx = currentMonth - 1;
     const el = monthRefs.current[idx];
-    if (el && scrollRef.current) {
-      // 当月の先頭が見えるようにスクロール（即座に・アニメーションなし）
-      scrollRef.current.scrollTop = Math.max(0, el.offsetTop - 8);
+    if (el) {
+      el.scrollIntoView({ behavior: 'instant', block: 'start' });
     }
   }, [currentMonth]);
 

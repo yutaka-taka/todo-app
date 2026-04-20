@@ -14,8 +14,9 @@ export default function RegionSelectModal({ currentRegion, canClose, onSelect, o
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Region | null>(currentRegion ?? null);
 
+  const trimmedSearch = search.replace(/^[、。，,\s]+/, '');
   const filtered = regions.filter(r =>
-    r.adminName.includes(search) || r.commonName.includes(search)
+    r.adminName.includes(trimmedSearch) || r.commonName.includes(trimmedSearch)
   );
 
   const handleConfirm = () => {
@@ -49,7 +50,7 @@ export default function RegionSelectModal({ currentRegion, canClose, onSelect, o
               type="text"
               placeholder="地域名で検索..."
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => setSearch(e.target.value.replace(/^[、。，,\s]+/, ''))}
               className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-300"
             />
           </div>
