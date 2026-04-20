@@ -1,0 +1,133 @@
+'use client';
+import { useEffect, useRef } from 'react';
+import { Region, CollectionType } from '@/types';
+import { generateYearCalendar, collectionTypeLabels, collectionTypeColors } from '@/lib/calendarData';
+
+const DOW_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
+
+interface Props {
+  region: Region;
+  onClose: () => void;
+}
+
+export default function CalendarModal({ region, onClose }: Props) {
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  const year = currentYear;
+
+  const calendars = generateYearCalendar(year, region.scheduleType);
+  const monthRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const idx = currentMonth - 1;
+    const el = monthRefs.current[idx];
+    if (el && scrollRef.current) {
+      scrollRef.current.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' });
+    }
+  }, [currentMonth]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={e => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="text-base font-bold text-gray-800">📅 ごみ収集カレンダー</h2>
+            <p className="text-xs text-gray-500">{region.commonName} — {year}年</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg" aria-label="閉じる">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Legend */}
+        <div className="px-5 py-2 flex flex-wrap gap-2 border-b border-gray-100 flex-shrink-0">
+          {(Object.entries(collectionTypeLabels) as [CollectionType, string][]).map(([type, label]) => {
+            const c = collectionTypeColors[type];
+            return (
+              <span key={type} className="text-xs px-2 py-0.5 rounded-full border font-medium"
+                style={{ backgroundColor: c.bg, color: c.text, borderColor: c.border }}>
+                {label}
+              </span>
+            );
+          })}
+        </div>
+
+        <div ref={scrollRef} className="overflow-y-auto flex-1 px-4 py-3 space-y-5">
+          {calendars.map((cal, idx) => {
+            const isCurrentMonth = cal.month === currentMonth && cal.year === currentYear;
+            const firstDow = new Date(cal.year, cal.month - 1, 1).getDay();
+            const daysInMonth = new Date(cal.year, cal.month, 0).getDate();
+
+            const entryMap = new Map<number, CollectionType[]>();
+            cal.entries.forEach(e => entryMap.set(e.date, e.types));
+
+            return (
+              <div
+                key={cal.month}
+                ref={el => { monthRefs.current[idx] = el; }}
+                className={`rounded-2xl border ${isCurrentMonth ? 'border-blue-400 shadow-md' : 'border-gray-100'} bg-white overflow-hidden`}
+              >
+                <div className={`px-4 py-2 flex items-center justify-between ${isCurrentMonth ? 'bg-blue-500' : 'bg-gray-50'}`}>
+                  <span className={`font-bold text-sm ${isCurrentMonth ? 'text-white' : 'text-gray-700'}`}>
+                    {cal.year}年 {cal.month}月
+                  </span>
+                  {isCurrentMonth && (
+                    <span className="text-xs bg-white text-blue-600 font-bold px-2 py-0.5 rounded-full">今月</span>
+                  )}
+                </div>
+
+                <div className="p-2">
+                  {/* Day of week headers */}
+                  <div className="grid grid-cols-7 mb-1">
+                    {DOW_LABELS.map((d, i) => (
+                      <div key={d} className={`text-center text-xs font-semibold py-1 ${i === 0 ? 'text-red-400' : i === 6 ? 'text-blue-400' : 'text-gray-400'}`}>
+                        {d}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Calendar grid */}
+                  <div className="grid grid-cols-7 gap-y-1">
+                    {Array.from({ length: firstDow }).map((_, i) => (
+                      <div key={`empty-${i}`} />
+                    ))}
+                    {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(date => {
+                      const types = entryMap.get(date) ?? [];
+                      const dow = new Date(cal.year, cal.month - 1, date).getDay();
+                      const isToday = isCurrentMonth && date === now.getDate();
+
+                      return (
+                        <div key={date} className="flex flex-col items-center py-0.5">
+                          <span className={`text-xs w-6 h-6 flex items-center justify-center rounded-full font-medium
+                            ${isToday ? 'bg-blue-500 text-white' : dow === 0 ? 'text-red-400' : dow === 6 ? 'text-blue-400' : 'text-gray-700'}`}>
+                            {date}
+                          </span>
+                          {types.length > 0 && (
+                            <div className="flex flex-wrap justify-center gap-px mt-0.5">
+                              {types.map(t => (
+                                <span key={t} className="w-2 h-2 rounded-full" style={{ backgroundColor: collectionTypeColors[t].text }} title={collectionTypeLabels[t]} />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-100 flex-shrink-0">
+          <button onClick={onClose} className="btn-secondary w-full">閉じる</button>
+        </div>
+      </div>
+    </div>
+  );
+}

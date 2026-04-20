@@ -1,0 +1,14 @@
+{
+  "name": "ごみ分別アプリ - 長野市",
+  "short_name": "ごみ分別",
+  "description": "長野市のごみ分別・収集カレンダーアプリ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#1a1a2e",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
