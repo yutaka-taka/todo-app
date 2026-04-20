@@ -13,12 +13,21 @@ export default function AdminPage() {
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [updateMessage, setUpdateMessage] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [pdfUpdateStatus, setPdfUpdateStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [pdfUpdateMessage, setPdfUpdateMessage] = useState('');
+  const [pdfLastUpdated, setPdfLastUpdated] = useState<string | null>(null);
 
   useEffect(() => {
     setInfoUrl(localStorage.getItem('infoUrl') || DEFAULT_INFO_URL);
     setPdfUrl(localStorage.getItem('pdfUrl') || DEFAULT_PDF_URL);
     setLastUpdated(localStorage.getItem('lastUpdated'));
+    setPdfLastUpdated(localStorage.getItem('pdfLastUpdated'));
   }, []);
+
+  // ごみの出し方URLは変更のたびに自動保存
+  useEffect(() => {
+    if (pdfUrl) localStorage.setItem('pdfUrl', pdfUrl);
+  }, [pdfUrl]);
 
   const handleInfoUpdate = async () => {
     if (!infoUrl.trim()) return;
@@ -51,16 +60,36 @@ export default function AdminPage() {
     }
   };
 
-  const handlePdfSave = () => {
-    localStorage.setItem('pdfUrl', pdfUrl.trim());
-    setUpdateStatus('success');
-    setUpdateMessage('PDFのURLを保存しました');
-    setTimeout(() => setUpdateStatus('idle'), 2000);
-  };
+  const handlePdfUpdate = async () => {
+    if (!pdfUrl.trim()) return;
+    setPdfUpdateStatus('loading');
+    setPdfUpdateMessage('');
 
-  const handleOpenPdf = () => {
-    const url = pdfUrl.trim() || DEFAULT_PDF_URL;
-    window.open(url, '_blank', 'noopener,noreferrer');
+    try {
+      const res = await fetch('/api/fetch-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: pdfUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'エラーが発生しました');
+
+      // 既存データに追記（蓄積）
+      const existing = JSON.parse(localStorage.getItem('gomiNoShikataData') || '[]');
+      const merged = [...existing, ...(data.items ?? [])].filter(
+        (item, idx, arr) => arr.findIndex(i => i.name === item.name) === idx
+      );
+      localStorage.setItem('gomiNoShikataData', JSON.stringify(merged));
+
+      const ts = new Date().toLocaleString('ja-JP');
+      localStorage.setItem('pdfLastUpdated', ts);
+      setPdfLastUpdated(ts);
+      setPdfUpdateStatus('success');
+      setPdfUpdateMessage(`${data.items?.length ?? 0}件の情報を蓄積しました（合計${merged.length}件）`);
+    } catch (e) {
+      setPdfUpdateStatus('error');
+      setPdfUpdateMessage(e instanceof Error ? e.message : '更新に失敗しました');
+    }
   };
 
   return (
@@ -139,13 +168,13 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* ごみの出し方PDF URL */}
+        {/* ごみの出し方URL */}
         <div className="card space-y-3">
           <div>
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-              <span>📄</span> ごみの出し方（PDF URL）
+              <span>📄</span> ごみの出し方URL
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5">年間収集予定表・ごみの出し方PDFのURL</p>
+            <p className="text-xs text-gray-500 mt-0.5">URLは自動保存されます</p>
           </div>
           <textarea
             value={pdfUrl}
@@ -154,31 +183,39 @@ export default function AdminPage() {
             className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 bg-gray-50 resize-none"
             placeholder={DEFAULT_PDF_URL}
           />
-          <div className="flex gap-2">
-            <button
-              onClick={handlePdfSave}
-              className="flex-1 py-2.5 rounded-xl font-semibold text-sm bg-green-500 hover:bg-green-600 text-white transition-colors"
-            >
-              💾 URLを保存
-            </button>
-            <button
-              onClick={handleOpenPdf}
-              className="flex-1 py-2.5 rounded-xl font-semibold text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
-            >
-              📖 ごみの出し方
-            </button>
-          </div>
-        </div>
-
-        {/* 年間収集予定表URL（旧URL欄・互換のため残す） */}
-        <div className="card space-y-3">
-          <div>
-            <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-              <span>📅</span> 年間収集予定表URL
-            </h2>
-            <p className="text-xs text-gray-500 mt-0.5">「年間収集予定表」ボタンで開くページのURL</p>
-          </div>
-          <ScheduleUrlEditor />
+          {pdfUpdateStatus !== 'idle' && (
+            <div className={`rounded-xl px-3 py-2 text-xs font-medium flex items-center gap-2 ${
+              pdfUpdateStatus === 'loading' ? 'bg-blue-50 text-blue-700' :
+              pdfUpdateStatus === 'success' ? 'bg-green-50 text-green-700' :
+              'bg-red-50 text-red-700'
+            }`}>
+              {pdfUpdateStatus === 'loading' && <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
+              {pdfUpdateStatus === 'success' && <span>✅</span>}
+              {pdfUpdateStatus === 'error' && <span>❌</span>}
+              <span>{pdfUpdateStatus === 'loading' ? '更新中...' : pdfUpdateMessage}</span>
+            </div>
+          )}
+          <button
+            onClick={handlePdfUpdate}
+            disabled={pdfUpdateStatus === 'loading'}
+            className={`w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-colors ${
+              pdfUpdateStatus === 'loading'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-blue-500 hover:bg-blue-600 text-white'
+            }`}
+          >
+            {pdfUpdateStatus === 'loading' ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                更新中...
+              </>
+            ) : (
+              <>🔄 情報更新</>
+            )}
+          </button>
+          {pdfLastUpdated && (
+            <p className="text-xs text-gray-400 text-center">最終更新: {pdfLastUpdated}</p>
+          )}
         </div>
 
         {/* Reset */}
@@ -216,38 +253,3 @@ export default function AdminPage() {
   );
 }
 
-function ScheduleUrlEditor() {
-  const DEFAULT = 'https://www.city.nagano.nagano.jp/n121500/contents/p006210.html';
-  const [url, setUrl] = useState('');
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    setUrl(localStorage.getItem('scheduleUrl') || DEFAULT);
-  }, []);
-
-  const save = () => {
-    localStorage.setItem('scheduleUrl', url.trim() || DEFAULT);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  return (
-    <>
-      <textarea
-        value={url}
-        onChange={e => setUrl(e.target.value)}
-        rows={3}
-        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 bg-gray-50 resize-none"
-        placeholder={DEFAULT}
-      />
-      <button
-        onClick={save}
-        className={`w-full py-2.5 rounded-xl font-semibold text-sm transition-colors ${
-          saved ? 'bg-green-500 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-        }`}
-      >
-        {saved ? '✅ 保存しました' : '💾 URLを保存'}
-      </button>
-    </>
-  );
-}
