@@ -55,19 +55,24 @@ export default function RegionSelectModal({ currentRegion, canClose, onSelect, o
           </div>
         </div>
 
-        <div className="overflow-y-auto flex-1 px-5 pb-2 space-y-2">
+        <div className="overflow-y-auto flex-1 px-5 pb-2 space-y-1.5">
           {filtered.map(r => (
             <button
               key={r.id}
               onClick={() => setSelected(r)}
-              className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${
+              className={`w-full text-left px-4 py-2.5 rounded-xl border transition-all ${
                 selected?.id === r.id
                   ? 'border-blue-400 bg-blue-50 shadow-sm'
                   : 'border-gray-100 bg-white hover:border-gray-300'
               }`}
             >
-              <p className="text-sm font-semibold text-gray-800">{r.commonName}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{r.adminName}</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-gray-800">{r.adminName}</p>
+                <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full flex-shrink-0">
+                  {r.commonName}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 mt-0.5">収集グループ {r.calendarGroup}</p>
             </button>
           ))}
           {filtered.length === 0 && (
@@ -85,7 +90,7 @@ export default function RegionSelectModal({ currentRegion, canClose, onSelect, o
                 : 'bg-gray-100 text-gray-400 cursor-not-allowed'
             }`}
           >
-            {selected ? `「${selected.commonName}」を選択する` : '地域を選んでください'}
+            {selected ? `「${selected.adminName}（${selected.commonName}）」を選択する` : '地域を選んでください'}
           </button>
         </div>
       </div>

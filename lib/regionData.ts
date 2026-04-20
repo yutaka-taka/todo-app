@@ -1,49 +1,243 @@
 import { Region } from '@/types';
 
-export const regions: Region[] = [
-  // ── 長野地区 ────────────────────────────────────────────
-  { id: 'r01', adminName: '長野地区連合町会', commonName: '長野中央エリア', scheduleType: 'A' },
-  { id: 'r02', adminName: '城山・三輪区', commonName: '城山・三輪', scheduleType: 'A' },
-  { id: 'r03', adminName: '南長野区', commonName: '南長野', scheduleType: 'A' },
-  { id: 'r04', adminName: '北長野区', commonName: '北長野', scheduleType: 'B' },
-  { id: 'r05', adminName: '古牧地区', commonName: '古牧・安茂里', scheduleType: 'A' },
-  { id: 'r06', adminName: '安茂里区', commonName: '安茂里', scheduleType: 'A' },
-  // ── 篠ノ井地区 ───────────────────────────────────────────
-  { id: 'r07', adminName: '篠ノ井地区連合自治会', commonName: '篠ノ井中央', scheduleType: 'B' },
-  { id: 'r08', adminName: '篠ノ井東福寺区', commonName: '篠ノ井東福寺', scheduleType: 'B' },
-  { id: 'r09', adminName: '篠ノ井布施五明区', commonName: '布施五明', scheduleType: 'B' },
-  // ── 松代地区 ────────────────────────────────────────────
-  { id: 'r10', adminName: '松代地区区長会', commonName: '松代', scheduleType: 'C' },
-  { id: 'r11', adminName: '清野区', commonName: '清野', scheduleType: 'C' },
-  // ── 若穂地区 ────────────────────────────────────────────
-  { id: 'r12', adminName: '若穂地区連合区長会', commonName: '若穂', scheduleType: 'A' },
-  { id: 'r13', adminName: '若穂保科区', commonName: '若穂保科', scheduleType: 'A' },
-  // ── 川中島地区 ───────────────────────────────────────────
-  { id: 'r14', adminName: '川中島地区区長会', commonName: '川中島', scheduleType: 'B' },
-  { id: 'r15', adminName: '川中島町今井区', commonName: '川中島今井', scheduleType: 'B' },
-  // ── 更北地区 ────────────────────────────────────────────
-  { id: 'r16', adminName: '更北地区連合自治会', commonName: '更北・稲里', scheduleType: 'A' },
-  { id: 'r17', adminName: '稲里区', commonName: '稲里', scheduleType: 'A' },
-  // ── 古里地区 ────────────────────────────────────────────
-  { id: 'r18', adminName: '古里地区区長会', commonName: '古里', scheduleType: 'C' },
-  // ── 七二会地区 ───────────────────────────────────────────
-  { id: 'r19', adminName: '七二会地区区長会', commonName: '七二会', scheduleType: 'C' },
-  // ── 戸隠地区 ────────────────────────────────────────────
-  { id: 'r20', adminName: '戸隠地区区長会', commonName: '戸隠', scheduleType: 'C' },
-  // ── 鬼無里地区 ───────────────────────────────────────────
-  { id: 'r21', adminName: '鬼無里地区区長会', commonName: '鬼無里', scheduleType: 'C' },
-  // ── 大岡地区 ────────────────────────────────────────────
-  { id: 'r22', adminName: '大岡地区区長会', commonName: '大岡', scheduleType: 'C' },
-  // ── 信更地区 ────────────────────────────────────────────
-  { id: 'r23', adminName: '信更地区区長会', commonName: '信更', scheduleType: 'C' },
-  // ── 芋井地区 ────────────────────────────────────────────
-  { id: 'r24', adminName: '芋井地区区長会', commonName: '芋井', scheduleType: 'C' },
-  // ── 豊野地区 ────────────────────────────────────────────
-  { id: 'r25', adminName: '豊野地区区長会', commonName: '豊野', scheduleType: 'B' },
-  // ── 小田切地区 ───────────────────────────────────────────
-  { id: 'r26', adminName: '小田切地区区長会', commonName: '小田切', scheduleType: 'C' },
-  // ── 浅川地区 ────────────────────────────────────────────
-  { id: 'r27', adminName: '浅川地区区長会', commonName: '浅川', scheduleType: 'A' },
-  // ── 吉田地区 ────────────────────────────────────────────
-  { id: 'r28', adminName: '吉田地区連合自治会', commonName: '吉田', scheduleType: 'A' },
+// 長野市ごみ収集カレンダー 行政連絡区一覧
+// 出典: https://www.city.nagano.nagano.jp/n121500/contents/p006210.html
+// calendarGroup = 年間収集予定表の番号（1〜42）
+// scheduleType: 1〜14=A, 15〜28=B, 29〜42=C
+
+type GroupDef = {
+  group: number;
+  commonName: string;
+  scheduleType: 'A' | 'B' | 'C';
+  areas: string[];
+};
+
+const groupDefs: GroupDef[] = [
+  {
+    group: 1, commonName: '西長野・茂菅', scheduleType: 'A',
+    areas: ['茂菅', '新諏訪町', '西長野', '桜枝町', '狐池', '花咲町', '往生地', '横沢町',
+      '西町上', '西町南', '上西之門町', '西之門町', '栄町', '立町', '若松町', '旭町', '長門町'],
+  },
+  {
+    group: 2, commonName: '城山・箱清水', scheduleType: 'A',
+    areas: ['上松', '湯谷', '滝', '城山団地', '湯谷団地', '箱清水', '元善町', '東之門町',
+      '伊勢町', '新町', '岩石町', '横町', '東町', '大門町', '三輪田町', '淀ヶ橋'],
+  },
+  {
+    group: 3, commonName: '権堂・後町', scheduleType: 'A',
+    areas: ['東後町', '問御所町', '権堂町', '田町', '南千歳町', '上千歳町',
+      '東鶴賀町', '西鶴賀町', '緑町', '居町', '柳町'],
+  },
+  {
+    group: 4, commonName: '諏訪町・県町', scheduleType: 'A',
+    areas: ['諏訪町', '西後町', '県町', '南県町', '妻科', '新田町'],
+  },
+  {
+    group: 5, commonName: '石堂・岡田', scheduleType: 'A',
+    areas: ['南石堂町', '北石堂町', '岡田町', '中御所', '末広町'],
+  },
+  {
+    group: 6, commonName: '荒木・若里', scheduleType: 'A',
+    areas: ['荒木', '若里西町', '若里中央', '南市', '北市', '北中', '七瀬', '七瀬南部',
+      '七瀬中町', '栗田', '南俣', '上千田', '中千田', '日詰', '母袋', '川合新田', '川合新田団地'],
+  },
+  {
+    group: 7, commonName: '三輪・古牧', scheduleType: 'A',
+    areas: ['北条', '中村', '川端', '五分一', '上高田', '南高田', '南長池',
+      '西尾張部', '東和田', '西和田', '平林', '荒屋', 'JR宿舎'],
+  },
+  {
+    group: 8, commonName: '古牧東', scheduleType: 'A',
+    areas: ['相ノ木東', '相ノ木西', '横山', '上宇木', '下宇木', '返目',
+      '泉町', '本郷', '四ツ石', '城東'],
+  },
+  {
+    group: 9, commonName: '吉田', scheduleType: 'A',
+    areas: ['押鐘', '桐原', '上町', '吉田田町', '吉田横町', '本町', '北本町',
+      '広町', '小町', '吉田東町', '中越', '太田', '鍋屋', '原町', '西堀'],
+  },
+  {
+    group: 10, commonName: '富竹・三才', scheduleType: 'A',
+    areas: ['富竹', '金箱', '下駒沢', '上駒沢', '三才', '西三才', '駒沢新町', '駒沢第二団地'],
+  },
+  {
+    group: 11, commonName: '尾張部・長池', scheduleType: 'A',
+    areas: ['南屋島', '北屋島', '北長池', '北尾張部', '石渡', '南堀', '北堀', '桜新町'],
+  },
+  {
+    group: 12, commonName: '柳原・小島', scheduleType: 'A',
+    areas: ['小島', '中俣', '布野', '村山', '柳原団地'],
+  },
+  {
+    group: 13, commonName: '若穂', scheduleType: 'A',
+    areas: ['綿内北町', '綿内東町', '綿内三', '綿内中央', '綿内中町', '東川田', '町川田',
+      '牛島', '保科中央', '保科温泉', '保科南', '若穂団地'],
+  },
+  {
+    group: 14, commonName: '浅川', scheduleType: 'A',
+    areas: ['浅川東条', '伺去', '真光寺', '浅川清水', '浅川畑山', '門沢', '中曽根',
+      '大池南', '北郷', '三ツ出', '台ヶ窪', '坂中', '浅川西平', '浅川福岡',
+      '浅川押田', '浅川西条', '浅川団地', '屋敷田', '神楽橋'],
+  },
+  {
+    group: 15, commonName: '松代東', scheduleType: 'B',
+    areas: ['松岡', '上区', '中区', '下区', '西風間', '東風間', '東区'],
+  },
+  {
+    group: 16, commonName: '若槻', scheduleType: 'B',
+    areas: ['檀田', '稲田', '徳間', '若槻東条', '上野', '田中', '田子',
+      '吉', '官舎', '上野ヶ丘', '若槻団地', '東徳間'],
+  },
+  {
+    group: 17, commonName: '穂保・赤沼', scheduleType: 'B',
+    areas: ['大町', '穂保', '津野', '赤沼'],
+  },
+  {
+    group: 18, commonName: '差出・犀北', scheduleType: 'B',
+    areas: ['平柴', '平柴台', '小柴見', '差出北', '差出中', '差出南', '大門',
+      '杏花台', '小路', '西河原', '伊勢宮', '宮沖', '犀北', '犀北第二団地',
+      '小市', '園沖', '小市団地', '小市南団地'],
+  },
+  {
+    group: 19, commonName: '芋井', scheduleType: 'B',
+    areas: ['深沢', '吉窪', '下宮野尾', '上宮野尾', '上山田中', '下山田中',
+      '国見', '中組', '千木', '裾花', '地蔵平'],
+  },
+  {
+    group: 20, commonName: '小田切・七二会', scheduleType: 'B',
+    areas: ['平', '荒井', '京田', '軍足', '池平', '麓原', '栄峯', '飯綱', '飯綱西',
+      '飯綱南', '飯綱東', '飯綱北', '飯綱中', '広瀬', '洞', '新屋', '百舌原',
+      '扇平', '沢浦', '影山', '上中犬飼', '下犬飼', '上ノ平', '荻久保', '沢尻',
+      '曲戸', '岩戸', '清水', '陽光台', '松久保', '坂', '高木', '中村', '坂額',
+      '鑪', '鑪団地', '泉平', '新安', '荒安'],
+  },
+  {
+    group: 21, commonName: '篠ノ井', scheduleType: 'B',
+    areas: ['東篠ノ井', '上篠ノ井', '平久保', '山崎', '角間', '上町', '四之宮',
+      '四野宮', '長谷', '越', '庄ノ宮', '明戸', '犀口', '北組', '中組', '南組',
+      '段ノ原', '新田', '本組', '古町', '中町', '南町', '深町', '大門', '築地',
+      '上石川', '下石川', '方田', '中条', '大当', '作見', 'みこと川', '有旅第一・第二',
+      '上有旅', '犬石', '十二', '笹鍋', '青池', '山布施', '遊谷', '若林',
+      '夜交', '秋古', '村山', '粒良田', '瀬成'],
+  },
+  {
+    group: 22, commonName: '更北北', scheduleType: 'B',
+    areas: ['小森', '上組', '中組', '東', '上庭', '中沢', '犀南', '東犀南', '杵淵', '西寺尾'],
+  },
+  {
+    group: 23, commonName: '更北南・川中島', scheduleType: 'B',
+    areas: ['柳沢', '瀬原田', '五明', '西組', '宮前', '南条', '内堀', '高田',
+      '唐臼', '芝沢', '合戦場', '御幣川', '西横田', '東横田', '会', '国道', '昭和'],
+  },
+  {
+    group: 24, commonName: '松代', scheduleType: 'B',
+    areas: ['清野第1〜3', '松代第4〜12・35', '東条第13〜18・33・34',
+      '豊栄第19〜22', '西寺尾第23', '寺尾第24〜28', '西条第29〜32'],
+  },
+  {
+    group: 25, commonName: '川中島中央', scheduleType: 'B',
+    areas: ['南原', '北原', '今井', '今井原', '御厨', '国道昭和', '神田',
+      '今里', '上氷鉋', '本町', '四ツ屋', '若葉町', '三本柳西'],
+  },
+  {
+    group: 26, commonName: '川中島南', scheduleType: 'B',
+    areas: ['丹波島', '鍛治沼', '青木島', '綱島', '久新', '四十二石', '大塚第一・第二',
+      '青木島団地', '川合', '綱島北', '上真島', '下真島', '小島田甲', '小島田乙',
+      '小島田中', '北氷鉋', '中氷鉋', '下氷鉋第一・第二', '田牧第一・第二', '境', '広田'],
+  },
+  {
+    group: 27, commonName: '信更北', scheduleType: 'B',
+    areas: ['瀬脇', '坪根', '倉並', '五十平', '古間', '平出', '上橋詰', '岩草', '大安寺', '笹平'],
+  },
+  {
+    group: 28, commonName: '信更南', scheduleType: 'B',
+    areas: ['赤田', '田野口', '氷ノ田', '灰原', '高野', '田沢', '吉原',
+      '三水', '涌池', '桜井', '宮平', '下平', '古藤', '安庭'],
+  },
+  {
+    group: 29, commonName: '戸隠中社・宝光社', scheduleType: 'C',
+    areas: ['中社', '宝光社', '上楠川'],
+  },
+  {
+    group: 30, commonName: '鬼無里東', scheduleType: 'C',
+    areas: ['北部', '中央', '東部', '南部', '川手', '志垣'],
+  },
+  {
+    group: 31, commonName: '鬼無里西', scheduleType: 'C',
+    areas: ['西部', '平', '西条', '追通', '上祖山', '下祖山'],
+  },
+  {
+    group: 32, commonName: '大岡', scheduleType: 'C',
+    areas: ['山大', '峯', '平', '和協', '美里', '新倉', '上新倉', '町'],
+  },
+  {
+    group: 33, commonName: '安茂里', scheduleType: 'C',
+    areas: ['松原', '上平', '小橋', '中区一二', '積善', '共栄', '東京',
+      '裾花', '西京', '田之頭', '押一'],
+  },
+  {
+    group: 34, commonName: '豊野北', scheduleType: 'C',
+    areas: ['北部（川口を除く甲）', '中牧', '弘崎', '聖'],
+  },
+  {
+    group: 35, commonName: '豊野南', scheduleType: 'C',
+    areas: ['南部（乙）', '聖を除く丙', '川口'],
+  },
+  {
+    group: 36, commonName: '古里北', scheduleType: 'C',
+    areas: ['南郷', '石', '西町', '上組', '立町', '南町', '中尾1・2'],
+  },
+  {
+    group: 37, commonName: '古里中', scheduleType: 'C',
+    areas: ['横町', '伊豆毛', '上田中', '神代町', '本町1・2', '小瀬1',
+      '泉平', '上神代', '豊陽台', '沖1・2', '中央組', '向原'],
+  },
+  {
+    group: 38, commonName: '古里南', scheduleType: 'C',
+    areas: ['本町3・4・5', '東町', '小瀬2', 'ゆたかの', '豊南町', '下田中'],
+  },
+  {
+    group: 39, commonName: '浅川山岳', scheduleType: 'C',
+    areas: ['浅野', '蟹沢', '入', '小日向', '上堰', '鳥居団地', '大方',
+      '橋場', '上原', '蟻ヶ崎', '城山', '川谷'],
+  },
+  {
+    group: 40, commonName: '豊野中央', scheduleType: 'C',
+    areas: ['旭町', '仲町', '上町', '西上町', '常磐町', '鹿島東', '鹿島西',
+      '大原東', '大原西', '下市場', '牧野島', '鹿道', '鹿道団地'],
+  },
+  {
+    group: 41, commonName: '豊野南部', scheduleType: 'C',
+    areas: ['久保', '本町', '境町', '千原田', '平', '和平団地', '藤池団地',
+      '下川西平', '太田笠子', '穂刈下', '穂刈中', '穂刈上', '穂刈北',
+      '穂刈団地', '陽のあたる丘', '大門', 'LR団地', '原', '道祖神'],
+  },
+  {
+    group: 42, commonName: '信更（津和）', scheduleType: 'C',
+    areas: ['津和中央', '山秋', '中福', '栃久保', '中尾', '菅沼', '細尾', '津上',
+      '外味藤', '豊和', '津南', '中組', '味藤', '橋場', '安用', '風越', '追沢',
+      '神田', '花倉', '二丁田', '穴平', '寺尾', '矢ノ尻', '峰組', '枌ノ木',
+      '赤柴', '石畑', '尾崎', '上古', '芦沢', '本村', '大河', '西日時'],
+  },
+  {
+    group: 43, commonName: '信更（牧田・信級）', scheduleType: 'C',
+    areas: ['塩本', '伊切', '牧田中一', '牧田中二', '中牧一', '中牧二',
+      '南牧住平', '一倉田和', '下中山', '和田吐唄', '日名', '置原',
+      '橋木', '左右', '岩下', '信級中央', '高見', '岩本', '柳高', '川名'],
+  },
+  {
+    group: 44, commonName: '中条', scheduleType: 'C',
+    areas: ['中条地区全域'],
+  },
 ];
+
+// 各行政連絡区を個別のRegionエントリとして展開
+export const regions: Region[] = groupDefs.flatMap(g =>
+  g.areas.map((area, idx) => ({
+    id: `g${g.group}-${idx}`,
+    adminName: area,
+    commonName: g.commonName,
+    calendarGroup: g.group,
+    scheduleType: g.scheduleType,
+  }))
+);

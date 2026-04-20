@@ -21,8 +21,9 @@ export interface GarbageItem {
 
 export interface Region {
   id: string;
-  adminName: string;
-  commonName: string;
+  adminName: string;     // 行政連絡区名
+  commonName: string;    // 地域の通称名
+  calendarGroup: number; // 年間収集予定表グループ番号（1-42）
   scheduleType: 'A' | 'B' | 'C';
 }
 
