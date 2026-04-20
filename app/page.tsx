@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import { Region, GarbageItem } from '@/types';
-import { searchGarbage, garbageData } from '@/lib/garbageData';
+import { searchGarbage } from '@/lib/garbageData';
 import DetailModal from '@/components/DetailModal';
 import CalendarModal from '@/components/CalendarModal';
 import RegionSelectModal from '@/components/RegionSelectModal';
@@ -105,15 +105,15 @@ export default function Home() {
   };
 
   const handleCameraIdentified = async (name: string) => {
-    setQuery(name);
-    setShowCamera(false);
     // 「診察券（プラスチックカード）」→ 素材キーワードを抽出して検索
     const parenMatch = name.match(/[（(]([^）)]+)[）)]/);
     const candidate = parenMatch ? parenMatch[1] : name;
     const materials = ['プラスチック', 'ペットボトル', 'アルミ', 'スチール', '金属', 'ガラス', 'びん',
       '陶磁器', 'ゴム', '革', '木', '紙', '布', '段ボール', '発泡スチロール', '缶', 'プラ'];
-    const material = materials.find(m => candidate.includes(m));
-    await handleSearch(material ?? candidate);
+    const searchTerm = materials.find(m => candidate.includes(m)) ?? candidate;
+    setQuery(searchTerm);  // 実際に検索するキーワードを入力欄に表示
+    setShowCamera(false);
+    await handleSearch(searchTerm);
   };
 
   const handleOpenDetail = (item: GarbageItem) => {

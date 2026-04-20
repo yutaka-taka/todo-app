@@ -18,15 +18,14 @@ export default function CalendarModal({ region, onClose }: Props) {
 
   const calendars = generateYearCalendar(year, region.scheduleType);
   const monthRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const idx = currentMonth - 1;
-    const el = monthRefs.current[idx];
+    const el = monthRefs.current[currentMonth - 1];
     if (el) {
       el.scrollIntoView({ behavior: 'instant', block: 'start' });
     }
-  }, [currentMonth]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -57,7 +56,7 @@ export default function CalendarModal({ region, onClose }: Props) {
           })}
         </div>
 
-        <div ref={scrollRef} className="overflow-y-auto flex-1 px-4 py-3 space-y-5">
+        <div className="overflow-y-auto flex-1 px-4 py-3 space-y-5">
           {calendars.map((cal, idx) => {
             const isCurrentMonth = cal.month === currentMonth && cal.year === currentYear;
             const firstDow = new Date(cal.year, cal.month - 1, 1).getDay();
