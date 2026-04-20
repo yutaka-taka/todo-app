@@ -1,38 +1,39 @@
 import { CollectionType, DayEntry, MonthlyCalendar } from '@/types';
 
+// スケジュール設定
+// burnableDays: 可燃ごみの曜日 (0=日,1=月,...,6=土)
+// plasticDay:   その日に可燃と同時に資源プラスチックを収集 (burnableDays のうち1つ)
+// branchesDay:  その日に可燃と同時に枝葉を収集 (burnableDays のうち1つ)
+// resourceDay:  月4回の資源収集(缶/びん/紙/不燃)を行う曜日
 interface ScheduleConfig {
-  burnable: number[];
-  recyclable: { weeks: number[]; day: number };
-  paper: { weeks: number[]; day: number };
-  nonBurnable: { week: number; day: number };
-  hazardous: { week: number; day: number };
+  burnableDays: number[];
+  plasticDay: number;
+  branchesDay: number;
+  resourceDay: number;
 }
 
-// Schedule A: 燃えるごみ=火・金, 資源缶びんペット=第2・4火, 古紙古布=第1・3金, 燃えないごみ=第3木, 有害=第1木
+// A: 可燃=火・金, プラ=金, 枝葉=火, 資源=月
 const scheduleA: ScheduleConfig = {
-  burnable: [2, 5],
-  recyclable: { weeks: [2, 4], day: 2 },
-  paper: { weeks: [1, 3], day: 5 },
-  nonBurnable: { week: 3, day: 4 },
-  hazardous: { week: 1, day: 4 },
+  burnableDays: [2, 5],
+  plasticDay: 5,
+  branchesDay: 2,
+  resourceDay: 1,
 };
 
-// Schedule B: 燃えるごみ=月・木, 資源缶びんペット=第2・4月, 古紙古布=第1・3木, 燃えないごみ=第3水, 有害=第1水
+// B: 可燃=月・木, プラ=木, 枝葉=月, 資源=金
 const scheduleB: ScheduleConfig = {
-  burnable: [1, 4],
-  recyclable: { weeks: [2, 4], day: 1 },
-  paper: { weeks: [1, 3], day: 4 },
-  nonBurnable: { week: 3, day: 3 },
-  hazardous: { week: 1, day: 3 },
+  burnableDays: [1, 4],
+  plasticDay: 4,
+  branchesDay: 1,
+  resourceDay: 5,
 };
 
-// Schedule C: 燃えるごみ=水・土, 資源缶びんペット=第2・4水, 古紙古布=第1・3土, 燃えないごみ=第3月, 有害=第1月
+// C: 可燃=水・土, プラ=土, 枝葉=水, 資源=火
 const scheduleC: ScheduleConfig = {
-  burnable: [3, 6],
-  recyclable: { weeks: [2, 4], day: 3 },
-  paper: { weeks: [1, 3], day: 6 },
-  nonBurnable: { week: 3, day: 1 },
-  hazardous: { week: 1, day: 1 },
+  burnableDays: [3, 6],
+  plasticDay: 6,
+  branchesDay: 3,
+  resourceDay: 2,
 };
 
 export const schedules: Record<'A' | 'B' | 'C', ScheduleConfig> = {
@@ -61,19 +62,11 @@ export function generateMonthCalendar(
   const schedule = schedules[scheduleType];
   const daysInMonth = new Date(year, month, 0).getDate();
 
-  // Precompute special days
-  const recyclableDates = new Set<number>();
-  const paperDates = new Set<number>();
-  schedule.recyclable.weeks.forEach(w => {
-    const d = getNthWeekday(year, month, schedule.recyclable.day, w);
-    if (d) recyclableDates.add(d);
-  });
-  schedule.paper.weeks.forEach(w => {
-    const d = getNthWeekday(year, month, schedule.paper.day, w);
-    if (d) paperDates.add(d);
-  });
-  const nonBurnableDate = getNthWeekday(year, month, schedule.nonBurnable.day, schedule.nonBurnable.week);
-  const hazardousDate = getNthWeekday(year, month, schedule.hazardous.day, schedule.hazardous.week);
+  // 資源収集日（月4回）
+  const cansDate = getNthWeekday(year, month, schedule.resourceDay, 1);          // 第1: 缶+ペット
+  const bottlesDate = getNthWeekday(year, month, schedule.resourceDay, 2);       // 第2: ビン+電池
+  const paperDate = getNthWeekday(year, month, schedule.resourceDay, 3);         // 第3: 紙+ペット
+  const nonBurnableDate = getNthWeekday(year, month, schedule.resourceDay, 4);   // 第4: 不燃
 
   const entries: DayEntry[] = [];
 
@@ -81,11 +74,18 @@ export function generateMonthCalendar(
     const dow = new Date(year, month - 1, date).getDay();
     const types: CollectionType[] = [];
 
-    if (schedule.burnable.includes(dow)) types.push('burnable');
-    if (recyclableDates.has(date)) types.push('recyclable');
-    if (paperDates.has(date)) types.push('paper');
+    // 可燃ごみの日
+    if (schedule.burnableDays.includes(dow)) {
+      types.push('burnable');
+      if (dow === schedule.plasticDay) types.push('plastic');
+      if (dow === schedule.branchesDay) types.push('branches');
+    }
+
+    // 資源収集日（月ごとの曜日）
+    if (date === cansDate) { types.push('cans'); types.push('pet'); }
+    if (date === bottlesDate) types.push('bottlesBatteries');
+    if (date === paperDate) { types.push('paper'); types.push('pet'); }
     if (date === nonBurnableDate) types.push('nonBurnable');
-    if (date === hazardousDate) types.push('hazardous');
 
     if (types.length > 0) entries.push({ date, dayOfWeek: dow, types });
   }
@@ -98,17 +98,23 @@ export function generateYearCalendar(year: number, scheduleType: 'A' | 'B' | 'C'
 }
 
 export const collectionTypeLabels: Record<CollectionType, string> = {
-  burnable: '燃えるごみ',
-  recyclable: '缶・びん・ペット',
-  paper: '古紙・古布',
-  nonBurnable: '燃えないごみ',
-  hazardous: '有害ごみ',
+  burnable: '可燃ごみ',
+  plastic: '資源プラスチック',
+  branches: '枝葉',
+  cans: '缶',
+  pet: 'ペット',
+  bottlesBatteries: 'ビン・電池',
+  paper: '紙',
+  nonBurnable: '不燃ごみ',
 };
 
 export const collectionTypeColors: Record<CollectionType, { bg: string; text: string; border: string }> = {
-  burnable: { bg: '#fef2f2', text: '#dc2626', border: '#fca5a5' },
-  recyclable: { bg: '#f0fdf4', text: '#16a34a', border: '#86efac' },
-  paper: { bg: '#fefce8', text: '#ca8a04', border: '#fde047' },
-  nonBurnable: { bg: '#fff7ed', text: '#ea580c', border: '#fdba74' },
-  hazardous: { bg: '#f5f3ff', text: '#7c3aed', border: '#c4b5fd' },
+  burnable:        { bg: '#fef2f2', text: '#dc2626', border: '#fca5a5' },
+  plastic:         { bg: '#fefce8', text: '#ca8a04', border: '#fde047' },
+  branches:        { bg: '#f0fdf4', text: '#16a34a', border: '#86efac' },
+  cans:            { bg: '#f0f9ff', text: '#0284c7', border: '#7dd3fc' },
+  pet:             { bg: '#eff6ff', text: '#2563eb', border: '#93c5fd' },
+  bottlesBatteries:{ bg: '#faf5ff', text: '#7c3aed', border: '#c4b5fd' },
+  paper:           { bg: '#fff7ed', text: '#ea580c', border: '#fdba74' },
+  nonBurnable:     { bg: '#f8fafc', text: '#475569', border: '#cbd5e1' },
 };

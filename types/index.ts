@@ -29,10 +29,13 @@ export interface Region {
 
 export type CollectionType =
   | 'burnable'
-  | 'recyclable'
+  | 'plastic'
+  | 'branches'
+  | 'cans'
+  | 'pet'
+  | 'bottlesBatteries'
   | 'paper'
-  | 'nonBurnable'
-  | 'hazardous';
+  | 'nonBurnable';
 
 export interface DayEntry {
   date: number;

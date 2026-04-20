@@ -107,7 +107,13 @@ export default function Home() {
   const handleCameraIdentified = async (name: string) => {
     setQuery(name);
     setShowCamera(false);
-    await handleSearch(name);
+    // 「診察券（プラスチックカード）」→ 素材キーワードを抽出して検索
+    const parenMatch = name.match(/[（(]([^）)]+)[）)]/);
+    const candidate = parenMatch ? parenMatch[1] : name;
+    const materials = ['プラスチック', 'ペットボトル', 'アルミ', 'スチール', '金属', 'ガラス', 'びん',
+      '陶磁器', 'ゴム', '革', '木', '紙', '布', '段ボール', '発泡スチロール', '缶', 'プラ'];
+    const material = materials.find(m => candidate.includes(m));
+    await handleSearch(material ?? candidate);
   };
 
   const handleOpenDetail = (item: GarbageItem) => {
