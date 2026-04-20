@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 
 const DEFAULT_INFO_URL = 'https://www.city.nagano.nagano.jp/n121500/contents/p006210.html';
 const DEFAULT_PDF_URL = 'https://www.city.nagano.nagano.jp/documents/238/r8hozonban.pdf';
+const DEFAULT_SEPARATION_URL = 'https://www.city.nagano.nagano.jp/gomi/menu/gomikensaku/i/index.html?utm_source=chatgpt.com';
 
 export default function AdminPage() {
   const router = useRouter();
@@ -17,11 +18,18 @@ export default function AdminPage() {
   const [pdfUpdateMessage, setPdfUpdateMessage] = useState('');
   const [pdfLastUpdated, setPdfLastUpdated] = useState<string | null>(null);
 
+  const [separationUrl, setSeparationUrl] = useState('');
+  const [separationStatus, setSeparationStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [separationMessage, setSeparationMessage] = useState('');
+  const [separationLastUpdated, setSeparationLastUpdated] = useState<string | null>(null);
+
   useEffect(() => {
     setInfoUrl(localStorage.getItem('infoUrl') || DEFAULT_INFO_URL);
     setPdfUrl(localStorage.getItem('pdfUrl') || DEFAULT_PDF_URL);
+    setSeparationUrl(localStorage.getItem('separationUrl') || DEFAULT_SEPARATION_URL);
     setLastUpdated(localStorage.getItem('lastUpdated'));
     setPdfLastUpdated(localStorage.getItem('pdfLastUpdated'));
+    setSeparationLastUpdated(localStorage.getItem('separationLastUpdated'));
   }, []);
 
   // ごみの出し方URLは変更のたびに自動保存
@@ -84,6 +92,34 @@ export default function AdminPage() {
     } catch (e) {
       setUpdateStatus('error');
       setUpdateMessage(e instanceof Error ? e.message : '更新に失敗しました');
+    }
+  };
+
+  const handleSeparationUpdate = async () => {
+    if (!separationUrl.trim()) return;
+    localStorage.setItem('separationUrl', separationUrl.trim());
+    setSeparationStatus('loading');
+    setSeparationMessage('');
+
+    try {
+      const res = await fetch('/api/fetch-separation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: separationUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'エラーが発生しました');
+
+      const ts = new Date().toLocaleString('ja-JP');
+      localStorage.setItem('separationLastUpdated', ts);
+      setSeparationLastUpdated(ts);
+      setSeparationStatus('success');
+      setSeparationMessage(
+        `${data.insertedCount ?? 0}件をDBに保存しました（合計取得: ${data.totalItems ?? 0}件、取得かな: ${data.fetchedKana?.length ?? 0}行）`
+      );
+    } catch (e) {
+      setSeparationStatus('error');
+      setSeparationMessage(e instanceof Error ? e.message : '更新に失敗しました');
     }
   };
 
@@ -192,6 +228,59 @@ export default function AdminPage() {
           </button>
           {lastUpdated && (
             <p className="text-xs text-gray-400 text-center">最終更新: {lastUpdated}</p>
+          )}
+        </div>
+
+        {/* 分別一覧URL */}
+        <div className="card space-y-3">
+          <div>
+            <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+              <span>📋</span> 分別一覧URL
+            </h2>
+            <p className="text-xs text-gray-500 mt-0.5">「あ」〜「わ」ボタンがあるごみ品目一覧ページのURL</p>
+          </div>
+          <textarea
+            value={separationUrl}
+            onChange={e => {
+              setSeparationUrl(e.target.value);
+              localStorage.setItem('separationUrl', e.target.value);
+            }}
+            rows={3}
+            className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-green-200 bg-gray-50 resize-none"
+            placeholder={DEFAULT_SEPARATION_URL}
+          />
+          {separationStatus !== 'idle' && (
+            <div className={`rounded-xl px-3 py-2 text-xs font-medium flex items-center gap-2 ${
+              separationStatus === 'loading' ? 'bg-blue-50 text-blue-700' :
+              separationStatus === 'success' ? 'bg-green-50 text-green-700' :
+              'bg-red-50 text-red-700'
+            }`}>
+              {separationStatus === 'loading' && <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
+              {separationStatus === 'success' && <span>✅</span>}
+              {separationStatus === 'error' && <span>❌</span>}
+              <span>{separationStatus === 'loading' ? '「あ」〜「わ」を順番に取得中... しばらくお待ちください' : separationMessage}</span>
+            </div>
+          )}
+          <button
+            onClick={handleSeparationUpdate}
+            disabled={separationStatus === 'loading'}
+            className={`w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-colors ${
+              separationStatus === 'loading'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-green-500 hover:bg-green-600 text-white'
+            }`}
+          >
+            {separationStatus === 'loading' ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                取得中...
+              </>
+            ) : (
+              <>🔄 情報更新</>
+            )}
+          </button>
+          {separationLastUpdated && (
+            <p className="text-xs text-gray-400 text-center">最終更新: {separationLastUpdated}</p>
           )}
         </div>
 

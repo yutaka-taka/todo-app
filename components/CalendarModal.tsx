@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Region, CollectionType } from '@/types';
 import { generateYearCalendar, collectionTypeLabels, collectionTypeColors } from '@/lib/calendarData';
 
@@ -18,6 +18,7 @@ export default function CalendarModal({ region, onClose }: Props) {
 
   const calendars = generateYearCalendar(year, region.scheduleType);
   const monthRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [selectedDate, setSelectedDate] = useState<{ date: number; types: CollectionType[] } | null>(null);
 
   useEffect(() => {
     const el = monthRefs.current[currentMonth - 1];
@@ -99,11 +100,22 @@ export default function CalendarModal({ region, onClose }: Props) {
                       const types = entryMap.get(date) ?? [];
                       const dow = new Date(cal.year, cal.month - 1, date).getDay();
                       const isToday = isCurrentMonth && date === now.getDate();
+                      const isSelected = isCurrentMonth && selectedDate?.date === date;
 
                       return (
-                        <div key={date} className="flex flex-col items-center py-0.5">
-                          <span className={`text-xs w-6 h-6 flex items-center justify-center rounded-full font-medium
-                            ${isToday ? 'bg-blue-500 text-white' : dow === 0 ? 'text-red-400' : dow === 6 ? 'text-blue-400' : 'text-gray-700'}`}>
+                        <div
+                          key={date}
+                          className={`flex flex-col items-center py-0.5 ${isCurrentMonth ? 'cursor-pointer active:opacity-60' : ''}`}
+                          onClick={() => {
+                            if (!isCurrentMonth) return;
+                            setSelectedDate(s => s?.date === date ? null : { date, types });
+                          }}
+                        >
+                          <span className={`text-xs w-6 h-6 flex items-center justify-center rounded-full font-medium transition-colors
+                            ${isSelected ? 'bg-amber-400 text-white ring-2 ring-amber-300' :
+                              isToday ? 'bg-blue-500 text-white' :
+                              dow === 0 ? 'text-red-400' :
+                              dow === 6 ? 'text-blue-400' : 'text-gray-700'}`}>
                             {date}
                           </span>
                           {types.length > 0 && (
@@ -122,6 +134,40 @@ export default function CalendarModal({ region, onClose }: Props) {
             );
           })}
         </div>
+
+        {selectedDate && (
+          <div className="px-4 pb-2 flex-shrink-0">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 relative">
+              <button
+                onClick={() => setSelectedDate(null)}
+                className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center text-gray-400 hover:text-gray-600 rounded-full"
+                aria-label="閉じる"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+              <p className="text-xs font-bold text-amber-800 mb-1.5 pr-5">
+                {currentMonth}月{selectedDate.date}日 のごみ収集
+              </p>
+              {selectedDate.types.length === 0 ? (
+                <p className="text-xs text-gray-500">この日の収集はありません</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedDate.types.map(t => (
+                    <span
+                      key={t}
+                      className="text-xs px-2 py-0.5 rounded-full border font-medium"
+                      style={{ backgroundColor: collectionTypeColors[t].bg, color: collectionTypeColors[t].text, borderColor: collectionTypeColors[t].border }}
+                    >
+                      {collectionTypeLabels[t]}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="px-5 py-4 border-t border-gray-100 flex-shrink-0">
           <button onClick={onClose} className="btn-secondary w-full">閉じる</button>
