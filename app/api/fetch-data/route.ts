@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { initDb, getDb } from '@/lib/db';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 interface ParsedItem {
   name: string;
@@ -75,11 +75,15 @@ async function extractFromPdf(
     return { items: [], pdfs: [], debug };
   }
 
+  if (buffer.byteLength > 5 * 1024 * 1024) {
+    debug.push(`警告: PDFが大きいです(${Math.round(buffer.byteLength / 1024 / 1024 * 10) / 10}MB)。処理に時間がかかる場合があります。`);
+  }
+
   const base64 = Buffer.from(buffer).toString('base64');
   debug.push('Claude APIにPDFを送信中...');
 
   try {
-    const client = new Anthropic({ apiKey });
+    const client = new Anthropic({ apiKey, timeout: 240_000 });
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 8192,
