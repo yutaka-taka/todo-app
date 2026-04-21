@@ -244,50 +244,54 @@ export default function Home() {
           )}
         </div>
 
-        {/* 大きさ制限ボタン */}
-        <button
-          onClick={() => setShowSizeLimit(true)}
-          className="w-full card flex items-center justify-center gap-2 py-3 hover:shadow-md active:scale-95 transition-all"
-        >
-          <span className="text-lg">📏</span>
-          <span className="text-sm font-semibold text-gray-700">大きさ制限</span>
-        </button>
-
         {/* Action buttons grid */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={handleOpenPDF}
+              disabled={!region}
+              className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
+            >
+              <span className="text-3xl">📄</span>
+              <span className="text-xs font-semibold text-gray-700 text-center leading-tight">年間収集<br/>予定表</span>
+            </button>
+
+            <button
+              onClick={() => region && setShowCalendar(true)}
+              disabled={!region}
+              className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
+            >
+              <span className="text-3xl">📅</span>
+              <span className="text-xs font-semibold text-gray-700 text-center leading-tight">収集<br/>カレンダー</span>
+            </button>
+          </div>
+
+          {/* 大きさ制限ボタン */}
           <button
-            onClick={handleOpenPDF}
-            disabled={!region}
-            className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
+            onClick={() => setShowSizeLimit(true)}
+            className="w-full card flex items-center justify-center gap-2 py-3 hover:shadow-md active:scale-95 transition-all"
           >
-            <span className="text-3xl">📄</span>
-            <span className="text-xs font-semibold text-gray-700 text-center leading-tight">年間収集<br/>予定表</span>
+            <span className="text-lg">📏</span>
+            <span className="text-sm font-semibold text-gray-700">大きさ制限</span>
           </button>
 
-          <button
-            onClick={() => region && setShowCalendar(true)}
-            disabled={!region}
-            className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
-          >
-            <span className="text-3xl">📅</span>
-            <span className="text-xs font-semibold text-gray-700 text-center leading-tight">収集<br/>カレンダー</span>
-          </button>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setShowRegion(true)}
+              className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
+            >
+              <span className="text-2xl">📍</span>
+              <span className="text-xs font-semibold text-gray-700">地域選択</span>
+            </button>
 
-          <button
-            onClick={() => setShowRegion(true)}
-            className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
-          >
-            <span className="text-2xl">📍</span>
-            <span className="text-xs font-semibold text-gray-700">地域選択</span>
-          </button>
-
-          <button
-            onClick={() => setShowAdminPw(true)}
-            className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
-          >
-            <span className="text-2xl">⚙️</span>
-            <span className="text-xs font-semibold text-gray-700">管理</span>
-          </button>
+            <button
+              onClick={() => setShowAdminPw(true)}
+              className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
+            >
+              <span className="text-2xl">⚙️</span>
+              <span className="text-xs font-semibold text-gray-700">管理</span>
+            </button>
+          </div>
         </div>
 
         {region && (
@@ -346,8 +350,8 @@ export default function Home() {
                   color: 'bg-red-50 border-red-200',
                   labelColor: 'bg-red-100 text-red-700',
                   rows: [
-                    { label: '集積所', value: '1m × 50cm × 50cm 以内' },
-                    { label: '直接持ち込み', value: '2m50cm × 1m50cm × 1m 以内（木材は厚さ20cm未満かつ長さ2m50cm以内）' },
+                    { label: '集積所', value: '1m×50cm×50cm以内（※1）' },
+                    { label: '直接持ち込み', value: '2m50cm×1m50cm×1m以内（木材は厚さ20cm未満かつ長さ2m50cm以内）' },
                     { label: '処理施設', value: 'ながの環境エネルギーセンター' },
                   ],
                 },
@@ -356,9 +360,9 @@ export default function Home() {
                   color: 'bg-orange-50 border-orange-200',
                   labelColor: 'bg-orange-100 text-orange-700',
                   rows: [
-                    { label: '集積所', value: '1m × 50cm × 50cm 以内' },
-                    { label: '直接持ち込み', value: '1m80cm × 1m × 50cm 以内（三脚・サッシ等の単一金属は3mまで）' },
-                    { label: '処理施設', value: '資源再生センター' },
+                    { label: '集積所', value: '1m×50cm×50cm以内（※1）' },
+                    { label: '直接持ち込み', value: '1m80cm×1m×50cm以内（三脚・サッシ等の単一金属は3mまで）' },
+                    { label: '処理施設', value: '資源再生センター（※2）' },
                   ],
                 },
                 {
