@@ -28,9 +28,7 @@ function dbRowToGarbageItem(row: Record<string, unknown>): GarbageItem {
     keywords: Array.isArray(row.keywords) ? row.keywords : [],
     category: (row.category as GarbageItem['category']) ?? '燃えるごみ',
     categoryColor: '#64748b',
-    summary: String(row.summary ?? ''),
     details: String(row.details ?? ''),
-    disposalMethod: String(row.disposal_method ?? ''),
   };
 }
 
@@ -230,7 +228,7 @@ export default function Home() {
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.summary}</p>
+                      {item.details && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.details}</p>}
                     </div>
                     <button
                       onClick={() => handleOpenDetail(item)}

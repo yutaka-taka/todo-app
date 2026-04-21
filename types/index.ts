@@ -11,12 +11,9 @@ export interface GarbageItem {
   id: string;
   name: string;
   keywords: string[];
-  category: GarbageCategory;
+  category: GarbageCategory | string;
   categoryColor: string;
-  summary: string;
   details: string;
-  disposalMethod: string;
-  notes?: string;
 }
 
 export interface Region {

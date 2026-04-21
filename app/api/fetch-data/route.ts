@@ -283,20 +283,35 @@ export async function POST(req: NextRequest) {
     let insertedItems = 0;
     for (const item of items.slice(0, 5000)) {
       if (!item.name?.trim()) continue;
-      await sql`
-        INSERT INTO garbage_items (name, category, summary, details, disposal_method, keywords, source_url, updated_at)
-        VALUES (
-          ${item.name.trim()},
-          ${(item.category ?? '').trim()},
-          ${(item.summary ?? '').trim()},
-          ${(item.details ?? '').trim()},
-          ${(item.disposalMethod ?? '').trim()},
-          ${item.keywords ?? []},
-          ${url},
-          NOW()
-        )
-        ON CONFLICT DO NOTHING
-      `;
+      if (isPdf) {
+        // ごみの出し方PDF: name + category のみ更新（details/keywords は触らない）
+        await sql`
+          INSERT INTO garbage_items (name, category, source_url, updated_at)
+          VALUES (${item.name.trim()}, ${(item.category ?? '').trim()}, ${url}, NOW())
+          ON CONFLICT (name) DO UPDATE SET
+            category = EXCLUDED.category,
+            updated_at = NOW()
+        `;
+      } else {
+        // 分別情報URL (HTML): フルUPSERT
+        await sql`
+          INSERT INTO garbage_items (name, category, details, keywords, source_url, updated_at)
+          VALUES (
+            ${item.name.trim()},
+            ${(item.category ?? '').trim()},
+            ${(item.details ?? '').trim()},
+            ${item.keywords ?? []},
+            ${url},
+            NOW()
+          )
+          ON CONFLICT (name) DO UPDATE SET
+            category = EXCLUDED.category,
+            details = EXCLUDED.details,
+            keywords = EXCLUDED.keywords,
+            source_url = EXCLUDED.source_url,
+            updated_at = NOW()
+        `;
+      }
       insertedItems++;
     }
 

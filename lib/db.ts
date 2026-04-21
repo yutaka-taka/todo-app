@@ -13,14 +13,26 @@ export async function initDb() {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       category TEXT DEFAULT '',
-      summary TEXT DEFAULT '',
       details TEXT DEFAULT '',
-      disposal_method TEXT DEFAULT '',
       keywords TEXT[] DEFAULT '{}',
       source_url TEXT DEFAULT '',
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
+  `;
+  // 旧列を削除（既存テーブル対応）
+  await sql`ALTER TABLE garbage_items DROP COLUMN IF EXISTS summary`;
+  await sql`ALTER TABLE garbage_items DROP COLUMN IF EXISTS disposal_method`;
+  // 新列を追加（既存テーブル対応）
+  await sql`ALTER TABLE garbage_items ADD COLUMN IF NOT EXISTS details TEXT DEFAULT ''`;
+  await sql`ALTER TABLE garbage_items ADD COLUMN IF NOT EXISTS keywords TEXT[] DEFAULT '{}'`;
+  // name のユニーク制約（ON CONFLICT(name) に必要）
+  await sql`
+    DELETE FROM garbage_items a USING garbage_items b
+    WHERE a.id < b.id AND a.name = b.name
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS garbage_items_name_unique ON garbage_items(name)
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS region_pdfs (

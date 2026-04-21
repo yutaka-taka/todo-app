@@ -41,21 +41,13 @@ export default function DetailModal({ item, onClose }: Props) {
             {item.category}
           </span>
 
-          <div className="bg-slate-50 rounded-xl p-3">
-            <p className="text-xs font-semibold text-gray-500 mb-1">出し方</p>
-            <p className="text-sm text-gray-700">{item.disposalMethod}</p>
-          </div>
-
-          <div>
-            <p className="text-xs font-semibold text-gray-500 mb-2">詳細情報</p>
-            <p className="text-sm text-gray-700 whitespace-pre-line leading-relaxed">{item.details}</p>
-          </div>
-
-          {item.notes && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex gap-2">
-              <span className="text-amber-500 text-base">⚠️</span>
-              <p className="text-sm text-amber-800">{item.notes}</p>
+          {item.details ? (
+            <div>
+              <p className="text-xs font-semibold text-gray-500 mb-2">詳細情報</p>
+              <p className="text-sm text-gray-700 whitespace-pre-line leading-relaxed">{item.details}</p>
             </div>
+          ) : (
+            <p className="text-sm text-gray-400 text-center py-4">詳細情報はありません</p>
           )}
         </div>
 

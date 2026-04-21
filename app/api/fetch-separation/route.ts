@@ -18,63 +18,85 @@ const KANA_LIST = [
   'わ',
 ];
 
-interface ParsedItem {
-  name: string;
-  category: string;
-  summary: string;
-  details: string;
-  disposalMethod: string;
-  keywords: string[];
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
+async function fetchHtml(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': UA }, cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
 }
 
-function extractItemsFromHtml(html: string): ParsedItem[] {
+function extractItemLinks(html: string, baseUrl: string): { name: string; href: string }[] {
   const root = parse(html);
-  const items: ParsedItem[] = [];
+  const base = new URL(baseUrl);
+  const results: { name: string; href: string }[] = [];
 
-  // table rows
-  const rows = root.querySelectorAll('table tr');
-  for (const row of rows) {
-    const cells = row.querySelectorAll('td, th');
-    if (cells.length < 2) continue;
-    const name = cells[0].text.trim().replace(/\s+/g, ' ');
-    const category = cells[1].text.trim().replace(/\s+/g, ' ');
-    if (!name || name.length > 60 || name.match(/品目|名前|名称|ごみの種類/)) continue;
-    const summary = cells[2]?.text.trim().replace(/\s+/g, ' ') ?? '';
-    items.push({
-      name,
-      category,
-      summary: summary.slice(0, 150),
-      details: summary,
-      disposalMethod: summary.slice(0, 80),
-      keywords: [name],
-    });
+  // リンク付きの品目名を取得（a タグのテキスト）
+  for (const a of root.querySelectorAll('a[href]')) {
+    const name = a.text.trim().replace(/\s+/g, ' ');
+    const href = a.getAttribute('href') ?? '';
+    if (!name || name.length > 80 || !href) continue;
+    // かな一覧ページのナビゲーションリンク等を除外
+    if (KANA_LIST.includes(name) || name.match(/トップ|ホーム|メニュー|検索|一覧|ページ|先頭|前へ|次へ/)) continue;
+    const fullUrl = href.startsWith('http') ? href : new URL(href, base).toString();
+    // 同一ドメインのみ
+    if (!fullUrl.includes(base.hostname)) continue;
+    results.push({ name, href: fullUrl });
   }
+  return results;
+}
 
-  // dl/dt/dd pairs
-  if (items.length === 0) {
-    root.querySelectorAll('dt').forEach(dt => {
+function extractCategory(html: string): string {
+  const root = parse(html);
+
+  // パターン1: <dt>分別種別</dt><dd>xxx</dd>
+  for (const dt of root.querySelectorAll('dt')) {
+    if (dt.text.trim().includes('分別種別') || dt.text.trim().includes('分別区分')) {
       const dd = dt.nextElementSibling;
-      if (dd?.tagName === 'DD') {
-        const name = dt.text.trim().replace(/\s+/g, ' ');
-        const summary = dd.text.trim().replace(/\s+/g, ' ');
-        if (name && name.length < 60 && summary) {
-          items.push({ name, category: '', summary: summary.slice(0, 150), details: summary, disposalMethod: '', keywords: [name] });
-        }
+      if (dd) {
+        const text = dd.text.trim().replace(/\s+/g, ' ');
+        if (text) return text;
       }
-    });
+    }
   }
 
-  // li elements that look like item entries
-  if (items.length === 0) {
-    root.querySelectorAll('li').forEach(li => {
-      const text = li.text.trim().replace(/\s+/g, ' ');
-      if (text && text.length < 80) {
-        items.push({ name: text, category: '', summary: '', details: '', disposalMethod: '', keywords: [text] });
+  // パターン2: テーブルで「分別種別」ヘッダーの隣セル
+  for (const tr of root.querySelectorAll('tr')) {
+    const cells = tr.querySelectorAll('td, th');
+    for (let i = 0; i < cells.length - 1; i++) {
+      const header = cells[i].text.trim();
+      if (header.includes('分別種別') || header.includes('分別区分')) {
+        const value = cells[i + 1].text.trim().replace(/\s+/g, ' ');
+        if (value) return value;
       }
-    });
+    }
   }
 
-  return items;
+  // パターン3: 「分別種別」を含む要素の次の兄弟または子
+  for (const el of root.querySelectorAll('*')) {
+    const text = el.text.trim();
+    if (text === '分別種別' || text === '分別区分') {
+      const next = el.nextElementSibling;
+      if (next) {
+        const value = next.text.trim().replace(/\s+/g, ' ');
+        if (value) return value;
+      }
+    }
+  }
+
+  // パターン4: ページ内の分別種類キーワードを探す
+  const categoryKeywords = ['燃えるごみ', '燃えないごみ', '粗大ごみ', '有害ごみ', '拠点回収',
+    '資源ごみ', '不燃ごみ', '可燃ごみ'];
+  const bodyText = root.text;
+  for (const kw of categoryKeywords) {
+    if (bodyText.includes(kw)) return kw;
+  }
+
+  return '';
 }
 
 function findKanaUrlPattern(html: string, baseUrl: string): string | null {
@@ -104,24 +126,15 @@ export async function POST(req: NextRequest) {
 
   await initDb();
   const sql = getDb();
-  const allItems: ParsedItem[] = [];
   const errors: string[] = [];
   const fetchedKana: string[] = [];
+  let insertedCount = 0;
+  let totalItems = 0;
 
   try {
-    const baseRes = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      cache: 'no-store',
-    });
-    if (!baseRes.ok) {
-      return Response.json({ error: `ページ取得失敗 (${baseRes.status})` }, { status: 502 });
-    }
-    const baseHtml = await baseRes.text();
+    const baseHtml = await fetchHtml(url);
+    if (!baseHtml) return Response.json({ error: 'ベースページ取得失敗' }, { status: 502 });
 
-    // Extract items from the base page
-    allItems.push(...extractItemsFromHtml(baseHtml));
-
-    // Discover kana URL pattern from links; fall back to common patterns
     let urlTemplate = findKanaUrlPattern(baseHtml, url);
     if (!urlTemplate) {
       const cleanBase = url.split('?')[0];
@@ -130,52 +143,49 @@ export async function POST(req: NextRequest) {
 
     for (const kana of KANA_LIST) {
       try {
+        // 一覧ページに1秒wait
+        await new Promise(r => setTimeout(r, 1000));
+
         const kanaUrl = urlTemplate.replace('{kana}', encodeURIComponent(kana));
         if (kanaUrl === url) continue;
 
-        await new Promise(r => setTimeout(r, 1000));
-        const res = await fetch(kanaUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-          cache: 'no-store',
-        });
-        if (!res.ok) { errors.push(`${kana}: HTTP ${res.status}`); continue; }
+        const listHtml = await fetchHtml(kanaUrl);
+        if (!listHtml) { errors.push(`${kana}: 取得失敗`); continue; }
 
-        const html = await res.text();
-        const items = extractItemsFromHtml(html);
-        allItems.push(...items);
+        const itemLinks = extractItemLinks(listHtml, kanaUrl);
+        if (itemLinks.length === 0) continue;
+
         fetchedKana.push(kana);
+        totalItems += itemLinks.length;
+
+        for (const { name, href } of itemLinks) {
+          try {
+            // 詳細ページに50ms wait
+            await new Promise(r => setTimeout(r, 50));
+
+            const detailHtml = await fetchHtml(href);
+            const category = detailHtml ? extractCategory(detailHtml) : '';
+
+            // name + category のみ UPSERT（details/keywords は触らない）
+            await sql`
+              INSERT INTO garbage_items (name, category, source_url, updated_at)
+              VALUES (${name}, ${category}, ${url}, NOW())
+              ON CONFLICT (name) DO UPDATE SET
+                category = EXCLUDED.category,
+                updated_at = NOW()
+            `;
+            insertedCount++;
+          } catch (e) {
+            errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
       } catch (e) {
         errors.push(`${kana}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
-    // Deduplicate by name
-    const uniqueItems = allItems.filter(
-      (item, idx, arr) => arr.findIndex(i => i.name === item.name) === idx
-    );
-
-    let insertedCount = 0;
-    for (const item of uniqueItems.slice(0, 5000)) {
-      if (!item.name?.trim()) continue;
-      await sql`
-        INSERT INTO garbage_items (name, category, summary, details, disposal_method, keywords, source_url, updated_at)
-        VALUES (
-          ${item.name.trim()},
-          ${(item.category ?? '').trim()},
-          ${(item.summary ?? '').trim()},
-          ${(item.details ?? '').trim()},
-          ${(item.disposalMethod ?? '').trim()},
-          ${item.keywords ?? []},
-          ${url},
-          NOW()
-        )
-        ON CONFLICT DO NOTHING
-      `;
-      insertedCount++;
-    }
-
     return Response.json({
-      totalItems: uniqueItems.length,
+      totalItems,
       insertedCount,
       fetchedKana,
       errors: errors.slice(0, 20),
