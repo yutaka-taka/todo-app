@@ -106,11 +106,11 @@ PDF内のごみ品目を抽出し、必ずJSON形式のみで返答してくだ�
     try {
       response = await (client.beta as any).messages.create({
         model: 'claude-sonnet-4-6',
-        max_tokens: 16384,
+        max_tokens: 32768,
         betas: ['output-128k-2025-02-19'],
         messages: [{ role: 'user', content: msgContent }],
       });
-      debug.push('拡張出力beta使用 (max_tokens=16384)');
+      debug.push('拡張出力beta使用 (max_tokens=32768)');
     } catch {
       response = await client.messages.create({
         model: 'claude-sonnet-4-6',
