@@ -141,23 +141,26 @@ export async function POST(req: NextRequest) {
         fetchedKana.push(kana);
         totalItems += itemLinks.length;
 
-        for (const { name, href } of itemLinks) {
-          try {
-            // 詳細ページは wait なし（HTTP往復時間 約200-300ms が自然なpacing）
-            const detailHtml = await fetchHtml(href);
-            const category = detailHtml ? extractCategory(detailHtml) : '';
-
-            await sql`
-              INSERT INTO garbage_items (name, category, source_url, updated_at)
-              VALUES (${name}, ${category}, ${url}, NOW())
-              ON CONFLICT (name) DO UPDATE SET
-                category = EXCLUDED.category,
-                updated_at = NOW()
-            `;
-            insertedCount++;
-          } catch (e) {
-            errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
-          }
+        // 詳細ページを5並列取得（US→JP往復約400ms×直列=遅すぎるため並列化）
+        const CONCURRENCY = 5;
+        for (let i = 0; i < itemLinks.length; i += CONCURRENCY) {
+          const batch = itemLinks.slice(i, i + CONCURRENCY);
+          await Promise.all(batch.map(async ({ name, href }) => {
+            try {
+              const detailHtml = await fetchHtml(href);
+              const category = detailHtml ? extractCategory(detailHtml) : '';
+              await sql`
+                INSERT INTO garbage_items (name, category, source_url, updated_at)
+                VALUES (${name}, ${category}, ${url}, NOW())
+                ON CONFLICT (name) DO UPDATE SET
+                  category = EXCLUDED.category,
+                  updated_at = NOW()
+              `;
+              insertedCount++;
+            } catch (e) {
+              errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }));
         }
       } catch (e) {
         errors.push(`${kana}: ${e instanceof Error ? e.message : String(e)}`);
