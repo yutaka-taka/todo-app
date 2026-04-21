@@ -106,11 +106,11 @@ PDF内のごみ品目を抽出し、必ずJSON形式のみで返答してくだ�
     try {
       response = await (client.beta as any).messages.create({
         model: 'claude-sonnet-4-6',
-        max_tokens: 32768,
+        max_tokens: 16384,
         betas: ['output-128k-2025-02-19'],
         messages: [{ role: 'user', content: msgContent }],
       });
-      debug.push('拡張出力beta使用 (max_tokens=32768)');
+      debug.push('拡張出力beta使用 (max_tokens=16384)');
     } catch {
       response = await client.messages.create({
         model: 'claude-sonnet-4-6',
@@ -281,7 +281,7 @@ export async function POST(req: NextRequest) {
 
     const sql = getDb();
     let insertedItems = 0;
-    for (const item of items.slice(0, 300)) {
+    for (const item of items.slice(0, 5000)) {
       if (!item.name?.trim()) continue;
       await sql`
         INSERT INTO garbage_items (name, category, summary, details, disposal_method, keywords, source_url, updated_at)

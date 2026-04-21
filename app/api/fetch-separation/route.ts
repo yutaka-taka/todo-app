@@ -155,7 +155,7 @@ export async function POST(req: NextRequest) {
     );
 
     let insertedCount = 0;
-    for (const item of uniqueItems.slice(0, 2000)) {
+    for (const item of uniqueItems.slice(0, 5000)) {
       if (!item.name?.trim()) continue;
       await sql`
         INSERT INTO garbage_items (name, category, summary, details, disposal_method, keywords, source_url, updated_at)
