@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { parse } from 'node-html-parser';
-import Anthropic from '@anthropic-ai/sdk';
+import { resolve } from 'path';
+import { pathToFileURL } from 'url';
 import { initDb, getDb } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -22,15 +23,35 @@ interface RegionPdf {
   calendarGroup: number;
 }
 
+// 長野市ごみ分別区分の一覧（優先度順）
+const NAGANO_CATEGORIES = [
+  'プラスチック製容器包装', 'プラスチック容器包装', 'プラ容器包装',
+  '可燃ごみ', '不燃ごみ',
+  'ペットボトル', '空きびん', '空き缶', '缶・びん',
+  '段ボール', '紙パック', '新聞', '雑誌',
+  '小型家電', '小型電子機器',
+  '粗大ごみ', '有害ごみ', '危険ごみ',
+];
+
+function detectCategory(text: string): string {
+  for (const cat of NAGANO_CATEGORIES) {
+    if (text.includes(cat)) return cat;
+  }
+  return '';
+}
+
+function isValidItemName(name: string): boolean {
+  if (name.length < 2 || name.length > 50) return false;
+  if (/^[\d\s\-・。、！？…※①-⑩〇×◯▲△○●]+$/.test(name)) return false;
+  if (/^(品名|品目|ごみの名称|名称|分別区分|出し方|備考|注意|ページ|P\d|注|表)/.test(name)) return false;
+  return true;
+}
+
+// pdfjs-dist でPDFテキストを抽出し、ルールベースで品目・分別区分を解析
 async function extractFromPdf(
   pdfUrl: string
 ): Promise<{ items: ParsedItem[]; pdfs: RegionPdf[]; debug: string[] }> {
   const debug: string[] = [];
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    debug.push('ANTHROPIC_API_KEY が設定されていません');
-    return { items: [], pdfs: [], debug };
-  }
 
   debug.push(`PDFを取得中: ${pdfUrl}`);
   let pdfRes: Response;
@@ -47,15 +68,13 @@ async function extractFromPdf(
   }
 
   debug.push(`HTTPステータス: ${pdfRes.status} ${pdfRes.statusText}`);
-  debug.push(`Content-Type: ${pdfRes.headers.get('content-type') ?? 'unknown'}`);
 
   if (!pdfRes.ok) {
-    debug.push(`PDFの取得に失敗しました`);
+    debug.push('PDFの取得に失敗しました');
     return { items: [], pdfs: [], debug };
   }
 
   const contentType = pdfRes.headers.get('content-type') ?? '';
-  // PDFではなくHTMLが返ってきた場合（リダイレクトやエラーページ）
   if (contentType.includes('text/html')) {
     debug.push('PDFではなくHTMLが返却されました。URLを確認してください。');
     return { items: [], pdfs: [], debug };
@@ -75,94 +94,107 @@ async function extractFromPdf(
     return { items: [], pdfs: [], debug };
   }
 
-  if (buffer.byteLength > 5 * 1024 * 1024) {
-    debug.push(`警告: PDFが大きいです(${Math.round(buffer.byteLength / 1024 / 1024 * 10) / 10}MB)。処理に時間がかかる場合があります。`);
-  }
-
-  const base64 = Buffer.from(buffer).toString('base64');
-  debug.push('Claude APIにPDFを送信中...');
-
-  const prompt = `このPDFはごみの分別・出し方に関する長野市の公式資料です。
-
-PDF内のごみ品目を抽出し、必ずJSON形式のみで返答してください（説明文不要）。
-各フィールドは簡潔に（summaryは30字以内、keywordsは1〜2個）。
-
-{"items":[{"name":"品目名","category":"分別区分","summary":"一行概要","disposalMethod":"出し方","keywords":["別名"]}]}
-
-品目が見つからない場合は {"items": []} を返してください。`;
-
-  const msgContent = [
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } } as any,
-    { type: 'text', text: prompt },
-  ];
-
+  // pdfjs-dist でテキスト抽出
+  debug.push('pdfjs-distでテキスト抽出中...');
+  let fullText = '';
   try {
-    const client = new Anthropic({ apiKey, timeout: 240_000 });
+    const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
+    GlobalWorkerOptions.workerSrc = pathToFileURL(
+      resolve(process.cwd(), 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs')
+    ).toString();
 
-    // 拡張出力beta(16384トークン)を試み、失敗したら通常8192にフォールバック
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let response: any;
-    try {
-      response = await (client.beta as any).messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 16384,
-        betas: ['output-128k-2025-02-19'],
-        messages: [{ role: 'user', content: msgContent }],
-      });
-      debug.push('拡張出力beta使用 (max_tokens=16384)');
-    } catch {
-      response = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8192,
-        messages: [{ role: 'user', content: msgContent }],
-      });
-      debug.push('通常API使用 (max_tokens=8192)');
-    }
+    const data = new Uint8Array(buffer);
+    const doc = await getDocument({
+      data,
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    }).promise;
 
-    const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
-    debug.push(`Claude応答長: ${rawText.length} 文字`);
-    debug.push(`stop_reason: ${response.stop_reason}`);
+    debug.push(`PDF総ページ数: ${doc.numPages}`);
 
-    // JSON抽出（コードブロック対応）
-    const cleaned = rawText
-      .replace(/^```json\s*/m, '')
-      .replace(/^```\s*/m, '')
-      .replace(/```\s*$/m, '')
-      .trim();
-
-    // 正常パース試行
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      debug.push('JSONが見つかりませんでした');
-      return { items: [], pdfs: [], debug };
-    }
-
-    let items: ParsedItem[] = [];
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      items = (parsed.items ?? []).filter((i: ParsedItem) => i.name?.trim());
-      debug.push(`抽出品目数: ${items.length}`);
-    } catch {
-      // max_tokensで切断された場合、完結しているオブジェクトだけ回収
-      debug.push('JSON切断を検出 — 完結済みエントリーを個別回収します');
-      const re = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"category"\s*:\s*"([^"]*)"\s*(?:,\s*"summary"\s*:\s*"([^"]*)")?[^}]*\}/g;
-      let pm: RegExpExecArray | null;
-      while ((pm = re.exec(jsonMatch[0])) !== null) {
-        if (!pm[1]) continue;
-        items.push({
-          name: pm[1], category: pm[2] ?? '',
-          summary: pm[3] ?? '', details: '', disposalMethod: '', keywords: [pm[1]],
-        });
+    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+      const page = await doc.getPage(pageNum);
+      const content = await page.getTextContent();
+      // 位置情報を使って行を復元（Y座標が近いものを同一行とみなす）
+      const items = content.items as Array<{ str: string; transform: number[] }>;
+      const rows = new Map<number, Array<{ str: string; x: number }>>();
+      for (const item of items) {
+        if (!item.str?.trim()) continue;
+        const y = Math.round(item.transform[5] / 4) * 4;
+        if (!rows.has(y)) rows.set(y, []);
+        rows.get(y)!.push({ str: item.str, x: item.transform[4] });
       }
-      debug.push(`部分回収品目数: ${items.length}`);
+      // Y降順（上から下）でテキストを結合
+      const sortedRows = Array.from(rows.entries()).sort((a, b) => b[0] - a[0]);
+      for (const [, rowItems] of sortedRows) {
+        rowItems.sort((a, b) => a.x - b.x);
+        fullText += rowItems.map(i => i.str).join(' ') + '\n';
+      }
     }
-
-    return { items, pdfs: [], debug };
+    debug.push(`抽出テキスト長: ${fullText.length}文字`);
   } catch (e) {
-    debug.push(`Claude API エラー: ${e instanceof Error ? e.message : String(e)}`);
+    debug.push(`pdfjs-distエラー: ${e instanceof Error ? e.message : String(e)}`);
     return { items: [], pdfs: [], debug };
   }
+
+  // ルールベース解析
+  const items = parseGarbagePdfText(fullText, debug);
+  debug.push(`抽出品目数: ${items.length}`);
+  return { items, pdfs: [], debug };
+}
+
+function parseGarbagePdfText(text: string, debug: string[]): ParsedItem[] {
+  const items: ParsedItem[] = [];
+  const seen = new Set<string>();
+
+  const lines = text
+    .split('\n')
+    .map(l => l.trim().replace(/　/g, ' '))
+    .filter(Boolean);
+
+  let currentCategory = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // カテゴリのみの行（セクション見出し）
+    const exactCat = NAGANO_CATEGORIES.find(c => line === c);
+    if (exactCat) {
+      currentCategory = exactCat;
+      continue;
+    }
+
+    // 同一行に品名＋分別区分が含まれるパターン
+    const inlineCat = detectCategory(line);
+    if (inlineCat) {
+      const name = line
+        .replace(inlineCat, '')
+        .replace(/[：:・\-\s]+$/, '')
+        .replace(/^[：:・\-\s]+/, '')
+        .trim();
+      if (name && !seen.has(name) && isValidItemName(name)) {
+        seen.add(name);
+        items.push({ name, category: inlineCat, summary: '', details: '', disposalMethod: '', keywords: [name] });
+      }
+      currentCategory = inlineCat;
+      continue;
+    }
+
+    // セクション内の品目行（前後行のカテゴリを使用）
+    if (currentCategory) {
+      const name = line.replace(/^[・\-\s]+/, '').trim();
+      if (name && !seen.has(name) && isValidItemName(name)) {
+        seen.add(name);
+        items.push({ name, category: currentCategory, summary: '', details: '', disposalMethod: '', keywords: [name] });
+      }
+    }
+  }
+
+  if (items.length === 0) {
+    debug.push('ルールベース解析で品目が見つかりませんでした。PDFのテキスト構造を確認してください。');
+  }
+  return items;
 }
 
 async function extractFromHtml(
@@ -284,7 +316,6 @@ export async function POST(req: NextRequest) {
     for (const item of items.slice(0, 5000)) {
       if (!item.name?.trim()) continue;
       if (isPdf) {
-        // ごみの出し方PDF: name + category のみ更新（details/keywords は触らない）
         await sql`
           INSERT INTO garbage_items (name, category, source_url, updated_at)
           VALUES (${item.name.trim()}, ${(item.category ?? '').trim()}, ${url}, NOW())
@@ -293,7 +324,6 @@ export async function POST(req: NextRequest) {
             updated_at = NOW()
         `;
       } else {
-        // 分別情報URL (HTML): フルUPSERT
         await sql`
           INSERT INTO garbage_items (name, category, details, keywords, source_url, updated_at)
           VALUES (

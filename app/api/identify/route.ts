@@ -1,58 +1,141 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest } from 'next/server';
 
-const PROMPT = `あなたは日本のごみ分別の専門家です。写真に写っているものを識別してください。
-
-## 識別のポイント
-- 素材（プラスチック・金属・ガラス・紙・布など）を見る
-- 形・色・サイズを観察する
-- ラベルや文字があれば読む
-- 部分的に写っていても推測する
-- 日常的なごみを積極的に識別する
-
-## 回答形式
-品名のみを10文字以内で答えてください。例：
-ペットボトル・空き缶・ビン・牛乳パック・新聞紙・段ボール・雑誌・生ごみ・食品トレイ・プラ容器・乾電池・蛍光灯・電球・スプレー缶・ライター・傘・包丁・鍋・フライパン・家電・衣類・靴・ペットボトルのキャップ・割り箸・紙コップ・プラスチックバッグ・ラップ・発泡スチロール・ガラス
-
-## 重要
-- 多少不鮮明でも積極的に識別する
-- 「不明」は本当に何も判断できない場合のみ使う
-- 品名だけ答える（説明不要）`;
+// Google Cloud Vision の英語ラベル → 日本語ごみ品名 マッピング
+const VISION_LABEL_MAP: [string, string][] = [
+  // 容器・ボトル
+  ['plastic bottle', 'ペットボトル'],
+  ['bottle', 'びん'],
+  ['glass bottle', 'びん'],
+  ['aluminum can', '空き缶'],
+  ['tin can', '空き缶'],
+  ['beverage can', '空き缶'],
+  ['can', '空き缶'],
+  ['jar', 'びん'],
+  ['plastic container', 'プラ容器'],
+  ['food container', 'プラ容器'],
+  ['container', 'プラ容器'],
+  ['plastic bag', 'プラスチックバッグ'],
+  ['shopping bag', 'プラスチックバッグ'],
+  ['packaging', 'プラ容器'],
+  ['styrofoam', '発泡スチロール'],
+  ['foam', '発泡スチロール'],
+  ['cup', 'コップ'],
+  ['mug', 'マグカップ'],
+  ['wine glass', 'グラス'],
+  // 紙類
+  ['newspaper', '新聞紙'],
+  ['magazine', '雑誌'],
+  ['book', '雑誌'],
+  ['cardboard', '段ボール'],
+  ['carton', '紙パック'],
+  ['milk carton', '紙パック'],
+  ['paper bag', '紙袋'],
+  ['paper', '紙'],
+  ['envelope', '封筒'],
+  // 生ごみ
+  ['food', '生ごみ'],
+  ['vegetable', '生ごみ'],
+  ['fruit', '生ごみ'],
+  ['meat', '生ごみ'],
+  ['bread', '生ごみ'],
+  // 台所用品
+  ['pot', '鍋'],
+  ['pan', 'フライパン'],
+  ['frying pan', 'フライパン'],
+  ['cookware', '鍋'],
+  ['plate', '皿'],
+  ['bowl', '食器'],
+  ['chopsticks', '割り箸'],
+  ['knife', '包丁'],
+  // 家電
+  ['mobile phone', '携帯電話'],
+  ['smartphone', 'スマートフォン'],
+  ['telephone', '電話機'],
+  ['laptop', 'パソコン'],
+  ['computer', 'パソコン'],
+  ['monitor', 'パソコンモニター'],
+  ['television', 'テレビ'],
+  ['remote control', 'リモコン'],
+  ['camera', 'カメラ'],
+  ['tablet computer', 'タブレット'],
+  ['headphones', 'ヘッドホン'],
+  // 電池・照明
+  ['battery', '乾電池'],
+  ['fluorescent lamp', '蛍光灯'],
+  ['light bulb', '電球'],
+  ['fluorescent light', '蛍光灯'],
+  // 危険物
+  ['spray', 'スプレー缶'],
+  ['aerosol', 'スプレー缶'],
+  ['lighter', 'ライター'],
+  // 衣類
+  ['clothing', '衣類'],
+  ['jacket', '衣類'],
+  ['shirt', '衣類'],
+  ['shoes', '靴'],
+  ['footwear', '靴'],
+  ['bag', 'かばん'],
+  ['handbag', 'かばん'],
+  // 大型ごみ
+  ['umbrella', '傘'],
+  ['bicycle', '自転車'],
+  ['furniture', '家具'],
+  ['chair', 'いす'],
+  ['table', 'テーブル'],
+  ['bed', 'ベッド'],
+  // その他
+  ['rubber', 'ゴム'],
+  ['tire', 'タイヤ'],
+  ['wood', '木材'],
+  ['ceramic', '陶磁器'],
+];
 
 export async function POST(req: NextRequest) {
   const { image } = await req.json();
-  if (!image) {
-    return Response.json({ result: '不明' }, { status: 400 });
-  }
+  if (!image) return Response.json({ result: '不明' }, { status: 400 });
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GOOGLE_VISION_API_KEY;
   if (!apiKey) {
-    return Response.json({ result: '不明', error: 'API key not configured' });
+    return Response.json({ result: '不明', error: 'GOOGLE_VISION_API_KEY が未設定です' });
   }
 
   try {
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 30,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/jpeg', data: image },
-            },
-            { type: 'text', text: PROMPT },
-          ],
-        },
-      ],
-    });
+    const res = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            image: { content: image },
+            features: [
+              { type: 'OBJECT_LOCALIZATION', maxResults: 5 },
+              { type: 'LABEL_DETECTION', maxResults: 15 },
+            ],
+          }],
+        }),
+      }
+    );
 
-    const raw = response.content[0].type === 'text' ? response.content[0].text.trim() : '不明';
-    // 余分な説明文が含まれた場合、最初の単語（品名）だけ取り出す
-    const text = raw.split(/[\n。、,，]/)[0].trim().slice(0, 15) || '不明';
-    return Response.json({ result: text });
+    if (!res.ok) return Response.json({ result: '不明' });
+
+    const data = await res.json();
+    const objects: string[] = (data.responses?.[0]?.localizedObjectAnnotations ?? [])
+      .map((o: { name: string }) => o.name.toLowerCase());
+    const labels: string[] = (data.responses?.[0]?.labelAnnotations ?? [])
+      .map((l: { description: string }) => l.description.toLowerCase());
+
+    // 物体認識（より具体的）→ ラベルの順で照合
+    for (const candidate of [...objects, ...labels]) {
+      for (const [key, ja] of VISION_LABEL_MAP) {
+        if (candidate === key || candidate.includes(key) || key.includes(candidate)) {
+          return Response.json({ result: ja });
+        }
+      }
+    }
+
+    // マッピングなし：上位ラベルをそのまま返す（DB検索の部分一致に期待）
+    return Response.json({ result: labels[0] ?? '不明' });
   } catch {
     return Response.json({ result: '不明' });
   }
