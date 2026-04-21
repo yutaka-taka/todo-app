@@ -82,33 +82,43 @@ async function extractFromPdf(
   const base64 = Buffer.from(buffer).toString('base64');
   debug.push('Claude APIにPDFを送信中...');
 
-  try {
-    const client = new Anthropic({ apiKey, timeout: 240_000 });
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [{
-        role: 'user',
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        content: [
-          {
-            type: 'document',
-            source: { type: 'base64', media_type: 'application/pdf', data: base64 },
-          } as any,
-          {
-            type: 'text',
-            text: `このPDFはごみの分別・出し方に関する長野市の公式資料です。
+  const prompt = `このPDFはごみの分別・出し方に関する長野市の公式資料です。
 
 PDF内のごみ品目を抽出し、必ずJSON形式のみで返答してください（説明文不要）。
 各フィールドは簡潔に（summaryは30字以内、keywordsは1〜2個）。
 
 {"items":[{"name":"品目名","category":"分別区分","summary":"一行概要","disposalMethod":"出し方","keywords":["別名"]}]}
 
-品目が見つからない場合は {"items": []} を返してください。`,
-          },
-        ],
-      }],
-    });
+品目が見つからない場合は {"items": []} を返してください。`;
+
+  const msgContent = [
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } } as any,
+    { type: 'text', text: prompt },
+  ];
+
+  try {
+    const client = new Anthropic({ apiKey, timeout: 240_000 });
+
+    // 拡張出力beta(16384トークン)を試み、失敗したら通常8192にフォールバック
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let response: any;
+    try {
+      response = await (client.beta as any).messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 16384,
+        betas: ['output-128k-2025-02-19'],
+        messages: [{ role: 'user', content: msgContent }],
+      });
+      debug.push('拡張出力beta使用 (max_tokens=16384)');
+    } catch {
+      response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8192,
+        messages: [{ role: 'user', content: msgContent }],
+      });
+      debug.push('通常API使用 (max_tokens=8192)');
+    }
 
     const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
     debug.push(`Claude応答長: ${rawText.length} 文字`);
@@ -136,13 +146,13 @@ PDF内のごみ品目を抽出し、必ずJSON形式のみで返答してくだ�
     } catch {
       // max_tokensで切断された場合、完結しているオブジェクトだけ回収
       debug.push('JSON切断を検出 — 完結済みエントリーを個別回収します');
-      const partialMatches = Array.from(jsonMatch[0].matchAll(
-        /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"category"\s*:\s*"([^"]*)"\s*(?:,\s*"summary"\s*:\s*"([^"]*)")?[^}]*\}/g
-      ));
-      for (const m of partialMatches) {
+      const re = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"category"\s*:\s*"([^"]*)"\s*(?:,\s*"summary"\s*:\s*"([^"]*)")?[^}]*\}/g;
+      let pm: RegExpExecArray | null;
+      while ((pm = re.exec(jsonMatch[0])) !== null) {
+        if (!pm[1]) continue;
         items.push({
-          name: m[1], category: m[2],
-          summary: m[3] ?? '', details: '', disposalMethod: '', keywords: [m[1]],
+          name: pm[1], category: pm[2] ?? '',
+          summary: pm[3] ?? '', details: '', disposalMethod: '', keywords: [pm[1]],
         });
       }
       debug.push(`部分回収品目数: ${items.length}`);
