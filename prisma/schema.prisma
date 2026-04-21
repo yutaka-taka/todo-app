@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// JRAレース情報
+model Race {
+  id          String       @id @default(cuid())
+  name        String
+  date        DateTime
+  venue       String
+  grade       String       // G1, G2, G3
+  surface     String       // 芝, ダート
+  distance    Int
+  analyzed    Boolean      @default(false)
+  entries     RaceEntry[]
+  results     RaceResult[]
+  predictions Prediction[]
+  analysisLog AnalysisLog?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([name, date])
+  @@index([date, grade])
+  @@index([analyzed])
+}
+
+// 出走馬
+model RaceEntry {
+  id          String   @id @default(cuid())
+  raceId      String
+  race        Race     @relation(fields: [raceId], references: [id], onDelete: Cascade)
+  horseNumber Int
+  frameNumber Int?
+  horseName   String
+  age         Int?
+  sex         String?
+  weight      Float?
+  horseWeight Int?
+  jockey      String?
+  trainer     String?
+  odds        Float?
+  popularity  Int?
+  createdAt   DateTime @default(now())
+
+  @@unique([raceId, horseNumber])
+}
+
+// レース結果
+model RaceResult {
+  id             String   @id @default(cuid())
+  raceId         String
+  race           Race     @relation(fields: [raceId], references: [id], onDelete: Cascade)
+  finishPosition Int
+  horseNumber    Int
+  horseName      String
+  age            Int?
+  sex            String?
+  weight         Float?
+  horseWeight    Int?
+  jockey         String?
+  trainer        String?
+  time           String?
+  margin         String?
+  odds           Float?
+  popularity     Int?
+  createdAt      DateTime @default(now())
+
+  @@unique([raceId, horseNumber])
+}
+
+// 予想結果
+model Prediction {
+  id          String   @id @default(cuid())
+  raceId      String
+  race        Race     @relation(fields: [raceId], references: [id], onDelete: Cascade)
+  horseNumber Int?
+  horseName   String
+  placeRate   Float
+  rank        Int
+  factors     Json?
+  createdAt   DateTime @default(now())
+}
+
+// 分析ログ（自己学習の記録）
+model AnalysisLog {
+  id        String   @id @default(cuid())
+  raceId    String   @unique
+  race      Race     @relation(fields: [raceId], references: [id], onDelete: Cascade)
+  analysis  String   @db.Text
+  insights  String?  @db.Text
+  accuracy  Float?
+  createdAt DateTime @default(now())
+}
+
+// アルゴリズム設定（学習した予想思考）
+model AlgorithmConfig {
+  id            String   @id @default(cuid())
+  version       Int
+  isActive      Boolean  @default(false)
+  rules         String   @db.Text
+  insights      String?  @db.Text
+  analyzedCount Int      @default(0)
+  accuracy      Float?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+}
