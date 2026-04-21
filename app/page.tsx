@@ -51,6 +51,7 @@ export default function Home() {
   const [showPdf, setShowPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState('');
   const [pdfTitle, setPdfTitle] = useState('');
+  const [showSizeLimit, setShowSizeLimit] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -243,6 +244,15 @@ export default function Home() {
           )}
         </div>
 
+        {/* 大きさ制限ボタン */}
+        <button
+          onClick={() => setShowSizeLimit(true)}
+          className="w-full card flex items-center justify-center gap-2 py-3 hover:shadow-md active:scale-95 transition-all"
+        >
+          <span className="text-lg">📏</span>
+          <span className="text-sm font-semibold text-gray-700">大きさ制限</span>
+        </button>
+
         {/* Action buttons grid */}
         <div className="grid grid-cols-2 gap-3">
           <button
@@ -265,18 +275,18 @@ export default function Home() {
 
           <button
             onClick={() => setShowRegion(true)}
-            className="card flex flex-col items-center gap-2 py-5 hover:shadow-md active:scale-95 transition-all"
+            className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
           >
-            <span className="text-3xl">📍</span>
-            <span className="text-xs font-semibold text-gray-700 text-center leading-tight">地域<br/>選択</span>
+            <span className="text-2xl">📍</span>
+            <span className="text-xs font-semibold text-gray-700">地域選択</span>
           </button>
 
           <button
             onClick={() => setShowAdminPw(true)}
-            className="card flex flex-col items-center gap-2 py-5 hover:shadow-md active:scale-95 transition-all"
+            className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
           >
-            <span className="text-3xl">⚙️</span>
-            <span className="text-xs font-semibold text-gray-700 text-center leading-tight">管理</span>
+            <span className="text-2xl">⚙️</span>
+            <span className="text-xs font-semibold text-gray-700">管理</span>
           </button>
         </div>
 
@@ -316,6 +326,72 @@ export default function Home() {
       )}
       {showPdf && pdfUrl && (
         <PdfModal url={pdfUrl} title={pdfTitle} onClose={() => setShowPdf(false)} />
+      )}
+      {showSizeLimit && (
+        <div className="modal-overlay" onClick={() => setShowSizeLimit(false)}>
+          <div className="modal-sheet" onClick={e => e.stopPropagation()}>
+            <div className="modal-handle" />
+            <div className="px-5 pb-2 pt-1 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-gray-800">📏 大きさ制限</h2>
+              <button onClick={() => setShowSizeLimit(false)} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg" aria-label="閉じる">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+              {[
+                {
+                  category: '可燃ごみ',
+                  color: 'bg-red-50 border-red-200',
+                  labelColor: 'bg-red-100 text-red-700',
+                  rows: [
+                    { label: '集積所', value: '1m × 50cm × 50cm 以内' },
+                    { label: '直接持ち込み', value: '2m50cm × 1m50cm × 1m 以内（木材は厚さ20cm未満かつ長さ2m50cm以内）' },
+                    { label: '処理施設', value: 'ながの環境エネルギーセンター' },
+                  ],
+                },
+                {
+                  category: '不燃ごみ',
+                  color: 'bg-orange-50 border-orange-200',
+                  labelColor: 'bg-orange-100 text-orange-700',
+                  rows: [
+                    { label: '集積所', value: '1m × 50cm × 50cm 以内' },
+                    { label: '直接持ち込み', value: '1m80cm × 1m × 50cm 以内（三脚・サッシ等の単一金属は3mまで）' },
+                    { label: '処理施設', value: '資源再生センター' },
+                  ],
+                },
+                {
+                  category: '本体から充電式電池が外れない小型家電',
+                  color: 'bg-blue-50 border-blue-200',
+                  labelColor: 'bg-blue-100 text-blue-700',
+                  rows: [
+                    { label: '集積所', value: '30cm 未満まで' },
+                    { label: '直接持ち込み', value: '集積所に出せるサイズのほか、30cm以上のものも可' },
+                  ],
+                },
+              ].map(({ category, color, labelColor, rows }) => (
+                <div key={category} className={`rounded-xl border p-3 space-y-2 ${color}`}>
+                  <p className={`text-xs font-bold px-2 py-0.5 rounded-full inline-block ${labelColor}`}>{category}</p>
+                  {rows.map(({ label, value }) => (
+                    <div key={label}>
+                      <p className="text-xs font-semibold text-gray-500">{label}</p>
+                      <p className="text-sm text-gray-800 leading-snug">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              <div className="bg-gray-50 rounded-xl p-3 space-y-1">
+                <p className="text-xs font-bold text-gray-600">注意事項</p>
+                <p className="text-xs text-gray-600 leading-relaxed">※1 自転車（電動自転車を除く）・スキー板は基準を上回る大きさであっても例外的に集積所に排出可能</p>
+                <p className="text-xs text-gray-600 leading-relaxed">※2 ながの環境エネルギーセンターの受付を通って持ち込む</p>
+              </div>
+            </div>
+            <div className="px-5 py-4 border-t border-gray-100">
+              <button onClick={() => setShowSizeLimit(false)} className="btn-secondary w-full">閉じる</button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

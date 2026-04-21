@@ -202,7 +202,7 @@ export default function AdminPage() {
         <div className="card space-y-3">
           <div>
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-              <span>🔗</span> 分別情報URL
+              <span>🔗</span> 分別情報
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">ごみ分別情報を取得するWebページのURL</p>
           </div>
@@ -240,7 +240,7 @@ export default function AdminPage() {
         <div className="card space-y-3">
           <div>
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-              <span>📋</span> 分別一覧URL
+              <span>📋</span> 分別一覧
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">「あ」〜「わ」ボタンがあるごみ品目一覧ページのURL</p>
           </div>
