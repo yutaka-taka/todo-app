@@ -99,21 +99,10 @@ async function extractFromPdf(
             type: 'text',
             text: `このPDFはごみの分別・出し方に関する長野市の公式資料です。
 
-PDF内に記載されている**全ての**ごみ品目を抽出して、以下のJSON形式で返してください。
-必ずJSON形式のみで返答し、前置きや説明文は不要です。
+PDF内のごみ品目を抽出し、必ずJSON形式のみで返答してください（説明文不要）。
+各フィールドは簡潔に（summaryは30字以内、keywordsは1〜2個）。
 
-{
-  "items": [
-    {
-      "name": "品目名（具体的に。例：ペットボトル、アルミ缶、新聞紙）",
-      "category": "分別区分（例：資源ごみ、燃えるごみ、燃えないごみ、有害ごみ、粗大ごみ）",
-      "summary": "分別方法の一行概要",
-      "details": "詳細な出し方・注意事項（複数行OK）",
-      "disposalMethod": "具体的な出し方",
-      "keywords": ["関連キーワード", "別名", "通称"]
-    }
-  ]
-}
+{"items":[{"name":"品目名","category":"分別区分","summary":"一行概要","disposalMethod":"出し方","keywords":["別名"]}]}
 
 品目が見つからない場合は {"items": []} を返してください。`,
           },
@@ -123,7 +112,7 @@ PDF内に記載されている**全ての**ごみ品目を抽出して、以下�
 
     const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
     debug.push(`Claude応答長: ${rawText.length} 文字`);
-    debug.push(`応答先頭: ${rawText.slice(0, 100)}`);
+    debug.push(`stop_reason: ${response.stop_reason}`);
 
     // JSON抽出（コードブロック対応）
     const cleaned = rawText
@@ -132,15 +121,33 @@ PDF内に記載されている**全ての**ごみ品目を抽出して、以下�
       .replace(/```\s*$/m, '')
       .trim();
 
+    // 正常パース試行
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       debug.push('JSONが見つかりませんでした');
       return { items: [], pdfs: [], debug };
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    const items: ParsedItem[] = (parsed.items ?? []).filter((i: ParsedItem) => i.name?.trim());
-    debug.push(`抽出品目数: ${items.length}`);
+    let items: ParsedItem[] = [];
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      items = (parsed.items ?? []).filter((i: ParsedItem) => i.name?.trim());
+      debug.push(`抽出品目数: ${items.length}`);
+    } catch {
+      // max_tokensで切断された場合、完結しているオブジェクトだけ回収
+      debug.push('JSON切断を検出 — 完結済みエントリーを個別回収します');
+      const partialMatches = Array.from(jsonMatch[0].matchAll(
+        /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"category"\s*:\s*"([^"]*)"\s*(?:,\s*"summary"\s*:\s*"([^"]*)")?[^}]*\}/g
+      ));
+      for (const m of partialMatches) {
+        items.push({
+          name: m[1], category: m[2],
+          summary: m[3] ?? '', details: '', disposalMethod: '', keywords: [m[1]],
+        });
+      }
+      debug.push(`部分回収品目数: ${items.length}`);
+    }
+
     return { items, pdfs: [], debug };
   } catch (e) {
     debug.push(`Claude API エラー: ${e instanceof Error ? e.message : String(e)}`);
