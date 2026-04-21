@@ -107,15 +107,17 @@ export default function AdminPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: separationUrl.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'エラーが発生しました');
+      const bodyText = await res.text();
+      let data: Record<string, unknown>;
+      try { data = JSON.parse(bodyText); } catch { throw new Error(`サーバーエラー: ${bodyText.slice(0, 120)}`); }
+      if (!res.ok) throw new Error((data.error as string) ?? 'エラーが発生しました');
 
       const ts = new Date().toLocaleString('ja-JP');
       localStorage.setItem('separationLastUpdated', ts);
       setSeparationLastUpdated(ts);
       setSeparationStatus('success');
       setSeparationMessage(
-        `${data.insertedCount ?? 0}件をDBに保存しました（合計取得: ${data.totalItems ?? 0}件、取得かな: ${data.fetchedKana?.length ?? 0}行）`
+        `${(data.insertedCount as number) ?? 0}件をDBに保存しました（合計取得: ${(data.totalItems as number) ?? 0}件、取得かな: ${(data.fetchedKana as unknown[])?.length ?? 0}行）`
       );
     } catch (e) {
       setSeparationStatus('error');
@@ -134,13 +136,16 @@ export default function AdminPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: pdfUrl.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'エラーが発生しました');
+      const bodyText = await res.text();
+      let data: Record<string, unknown>;
+      try { data = JSON.parse(bodyText); } catch { throw new Error(`サーバーエラー: ${bodyText.slice(0, 120)}`); }
+      if (!res.ok) throw new Error((data.error as string) ?? 'エラーが発生しました');
 
       // 既存データに追記（蓄積）
+      const items = (data.items as Array<{name: string}>) ?? [];
       const existing = JSON.parse(localStorage.getItem('gomiNoShikataData') || '[]');
-      const merged = [...existing, ...(data.items ?? [])].filter(
-        (item, idx, arr) => arr.findIndex(i => i.name === item.name) === idx
+      const merged = [...existing, ...items].filter(
+        (item, idx, arr) => arr.findIndex((i: {name: string}) => i.name === item.name) === idx
       );
       localStorage.setItem('gomiNoShikataData', JSON.stringify(merged));
 
@@ -148,7 +153,7 @@ export default function AdminPage() {
       localStorage.setItem('pdfLastUpdated', ts);
       setPdfLastUpdated(ts);
       setPdfUpdateStatus('success');
-      setPdfUpdateMessage(`${data.items?.length ?? 0}件の情報を蓄積しました（合計${merged.length}件）`);
+      setPdfUpdateMessage(`${items.length}件の情報を蓄積しました（合計${merged.length}件）`);
     } catch (e) {
       setPdfUpdateStatus('error');
       setPdfUpdateMessage(e instanceof Error ? e.message : '更新に失敗しました');
@@ -288,7 +293,7 @@ export default function AdminPage() {
         <div className="card space-y-3">
           <div>
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-              <span>📄</span> ごみの出し方URL
+              <span>📄</span> ごみの出し方
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">URLは自動保存されます</p>
           </div>

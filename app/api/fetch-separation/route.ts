@@ -133,6 +133,7 @@ export async function POST(req: NextRequest) {
         const kanaUrl = urlTemplate.replace('{kana}', encodeURIComponent(kana));
         if (kanaUrl === url) continue;
 
+        await new Promise(r => setTimeout(r, 1000));
         const res = await fetch(kanaUrl, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
           cache: 'no-store',
