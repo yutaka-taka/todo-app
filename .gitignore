@@ -45,3 +45,5 @@ API_Key.txt
 *.webp
 .claude/
 SnapCrab_*
+
+.env*.local
