@@ -47,6 +47,9 @@ interface LearningStatus {
   totalRaces: number
   analyzedRaces: number
   unanalyzedRaces: number
+  horseStatCount: number
+  localModeThreshold: number
+  localModeReady: boolean
 }
 
 interface LearningResult {
@@ -58,8 +61,11 @@ interface LearningResult {
   summary: string
   keyPatterns?: string[]
   newInsightsCount?: number
+  horsesSaved?: number
+  horseStatCount?: number
   raceNames?: string[]
   message?: string
+  localModeReady?: boolean
 }
 
 // ---- Rank badge colors ----
@@ -132,6 +138,7 @@ export default function Home() {
   const [selectedRace, setSelectedRace] = useState<Race | null>(null)
   const [predictions, setPredictions] = useState<Prediction[]>([])
   const [analysis, setAnalysis] = useState<string>('')
+  const [predictionMode, setPredictionMode] = useState<'ai' | 'local' | null>(null)
   const [expandedCard, setExpandedCard] = useState<number | null>(null)
 
   const [loadingRaces, setLoadingRaces] = useState(true)
@@ -203,6 +210,7 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error)
       setPredictions(data.predictions ?? [])
       setAnalysis(data.analysis ?? '')
+      setPredictionMode(data.mode ?? null)
     } catch (e) {
       setPredictError(e instanceof Error ? e.message : '予想の生成に失敗しました')
     } finally {
@@ -272,22 +280,45 @@ export default function Home() {
             </div>
 
             {learningStatus && (
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                <div className="bg-[#080c18] rounded-xl p-2 text-center">
-                  <div className="text-lg font-bold text-yellow-400">{learningStatus.analyzedRaces}</div>
-                  <div className="text-[10px] text-slate-500">分析済み</div>
-                </div>
-                <div className="bg-[#080c18] rounded-xl p-2 text-center">
-                  <div className="text-lg font-bold text-orange-400">{learningStatus.unanalyzedRaces}</div>
-                  <div className="text-[10px] text-slate-500">未分析</div>
-                </div>
-                <div className="bg-[#080c18] rounded-xl p-2 text-center">
-                  <div className="text-lg font-bold text-emerald-400">
-                    {learningStatus.accuracy ? `${learningStatus.accuracy.toFixed(0)}%` : '-'}
+              <>
+                {/* ローカルモード進捗バー */}
+                <div className="mb-3">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[10px] text-slate-500">
+                      馬データ蓄積 ({learningStatus.horseStatCount ?? 0} / {learningStatus.localModeThreshold}頭)
+                    </span>
+                    {learningStatus.localModeReady ? (
+                      <span className="text-[10px] font-bold text-emerald-400">✓ Claude不要モード</span>
+                    ) : (
+                      <span className="text-[10px] text-slate-500">
+                        あと{Math.max(0, learningStatus.localModeThreshold - (learningStatus.horseStatCount ?? 0))}頭で自律予想
+                      </span>
+                    )}
                   </div>
-                  <div className="text-[10px] text-slate-500">推定精度</div>
+                  <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${learningStatus.localModeReady ? 'bg-gradient-to-r from-emerald-400 to-emerald-500' : 'bg-gradient-to-r from-purple-500 to-indigo-500'}`}
+                      style={{ width: `${Math.min(100, ((learningStatus.horseStatCount ?? 0) / learningStatus.localModeThreshold) * 100)}%` }}
+                    />
+                  </div>
                 </div>
-              </div>
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  <div className="bg-[#080c18] rounded-xl p-2 text-center">
+                    <div className="text-lg font-bold text-yellow-400">{learningStatus.analyzedRaces}</div>
+                    <div className="text-[10px] text-slate-500">分析済み</div>
+                  </div>
+                  <div className="bg-[#080c18] rounded-xl p-2 text-center">
+                    <div className="text-lg font-bold text-orange-400">{learningStatus.unanalyzedRaces}</div>
+                    <div className="text-[10px] text-slate-500">未分析</div>
+                  </div>
+                  <div className="bg-[#080c18] rounded-xl p-2 text-center">
+                    <div className="text-lg font-bold text-emerald-400">
+                      {learningStatus.accuracy ? `${learningStatus.accuracy.toFixed(0)}%` : '-'}
+                    </div>
+                    <div className="text-[10px] text-slate-500">推定精度</div>
+                  </div>
+                </div>
+              </>
             )}
 
             <button
@@ -328,8 +359,14 @@ export default function Home() {
                       <span className="text-emerald-400 text-sm">✓</span>
                       <p className="text-xs text-emerald-400 font-medium">
                         {learningResult.raceNames?.join('、')} を分析しました
+                        {learningResult.horsesSaved ? `（馬データ+${learningResult.horsesSaved}頭）` : ''}
                       </p>
                     </div>
+                    {learningResult.localModeReady && (
+                      <div className="mb-2 px-3 py-1.5 bg-emerald-900/30 border border-emerald-700/50 rounded-xl text-xs text-emerald-400 text-center font-bold">
+                        🎉 Claude不要モード解放！予想はAPIなしで動作します
+                      </div>
+                    )}
                     <div className="bg-[#080c18] rounded-xl p-3">
                       <p className="text-xs text-slate-300 leading-relaxed">{learningResult.summary}</p>
                       {learningResult.keyPatterns && learningResult.keyPatterns.length > 0 && (
@@ -489,6 +526,16 @@ export default function Home() {
             <div className="flex items-center gap-2 mb-3">
               <h2 className="text-base font-bold text-white">予想結果</h2>
               <span className="text-xs text-slate-500">— 連対率上位5頭</span>
+              {predictionMode === 'local' && (
+                <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-900/50 text-emerald-400 border border-emerald-700/50">
+                  🤖 API不要
+                </span>
+              )}
+              {predictionMode === 'ai' && (
+                <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-400 border border-purple-700/50">
+                  ✨ Claude AI
+                </span>
+              )}
             </div>
 
             {/* レース分析 */}

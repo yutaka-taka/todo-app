@@ -123,6 +123,8 @@ ${algorithmRules}
   return JSON.parse(jsonText) as PredictionResponse
 }
 
+// ---- 自己学習用 ----
+
 export interface LearnedInsight {
   category: string
   insight: string
@@ -130,7 +132,21 @@ export interface LearnedInsight {
   applicableCases: string
 }
 
+export interface HorseStatData {
+  horseName: string
+  totalRaces: number
+  totalPlaces: number
+  g1Races: number
+  g1Places: number
+  distanceData: Record<string, { races: number; places: number }>
+  venueData: Record<string, { races: number; places: number }>
+  surfaceData: Record<string, { races: number; places: number }>
+  recentForm: string
+  lastRaceDate?: string
+}
+
 export interface LearningResult {
+  horseStats: HorseStatData[]
   newInsights: LearnedInsight[]
   updatedRules: string
   keyPatterns: string[]
@@ -152,18 +168,38 @@ ${racesData}
 【現在の予想ルール】
 ${currentRules}
 
-【分析タスク】
+【分析タスク A: アルゴリズム改善】
 1. 各レースの1着・2着馬の共通点・パターンを特定
-2. 人気馬が馬券外に飛んだ要因を分析（波乱の原因）
+2. 人気馬が馬券外に飛んだ要因を分析
 3. 穴馬・低人気馬が好走した理由を抽出
 4. 距離・コース・季節・馬場状態による傾向
 5. 騎手・調教師コンビの影響度
-6. 前走着順・前走レースグレードとの相関
-7. 血統的傾向（サイヤーライン別の特徴）
+6. 血統的傾向
+
+【分析タスク B: 馬別成績データ抽出】
+分析対象レースに登場した各馬について、あなたの知識から以下を推定してください：
+- 通算出走数・連対数（概算でよい）
+- G1での出走数・連対数
+- 得意距離・競馬場・馬場（芝/ダート）
+- 直近5走の着順（1-2-3-4-5着で表記、例: "1-2-3-1-2"）
 
 以下のJSON形式のみで返してください。JSON以外のテキストは一切含めないでください：
 
 {
+  "horseStats": [
+    {
+      "horseName": "馬名",
+      "totalRaces": 20,
+      "totalPlaces": 12,
+      "g1Races": 5,
+      "g1Places": 3,
+      "distanceData": {"3200": {"races": 4, "places": 3}, "3000": {"races": 2, "places": 1}},
+      "venueData": {"京都": {"races": 5, "places": 3}, "阪神": {"races": 4, "places": 2}},
+      "surfaceData": {"芝": {"races": 20, "places": 12}},
+      "recentForm": "1-1-2-3-1",
+      "lastRaceDate": "2024-04"
+    }
+  ],
   "newInsights": [
     {
       "category": "カテゴリ（例：距離適性, 騎手評価, 血統等）",
@@ -172,16 +208,18 @@ ${currentRules}
       "applicableCases": "この知見が適用できる条件"
     }
   ],
-  "updatedRules": "改善された予想ルール全文（既存ルールを踏まえて全体を書き直す）",
+  "updatedRules": "改善された予想ルール全文",
   "keyPatterns": ["重要パターン1", "重要パターン2", "重要パターン3"],
   "estimatedAccuracy": 65.5,
-  "summary": "今回の学習で得られた主要な知見のサマリー（3-4文）"
-}`
+  "summary": "今回の学習で得られた主要な知見（3-4文）"
+}
+
+重要: horseStatsには分析レースに登場した主な馬を含めてください。わからない場合は0で埋めてください。`
 
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    system: `あなたはJRA競馬の機械学習システムです。過去のレース結果を客観的に分析し、連対率予測の精度を向上させる知見を抽出します。必ずJSON形式のみで返答してください。`,
+    max_tokens: 8096,
+    system: `あなたはJRA競馬の機械学習システムです。過去のレース結果を客観的に分析し、連対率予測の精度を向上させる知見と馬別データを抽出します。必ずJSON形式のみで返答してください。`,
     messages: [{ role: 'user', content: prompt }],
   })
 
@@ -192,5 +230,8 @@ ${currentRules}
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
   const jsonText = jsonMatch ? jsonMatch[1].trim() : text
 
-  return JSON.parse(jsonText) as LearningResult
+  const result = JSON.parse(jsonText) as LearningResult
+  // horseStats が未定義の場合は空配列
+  if (!result.horseStats) result.horseStats = []
+  return result
 }
