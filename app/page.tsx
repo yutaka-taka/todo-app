@@ -350,7 +350,7 @@ export default function Home() {
                   color: 'bg-red-50 border-red-200',
                   labelColor: 'bg-red-100 text-red-700',
                   rows: [
-                    { label: '集積所', value: '1m×50cm×50cm以内（※1）' },
+                    { label: '集積所', value: '1m×50cm×50cm以内' },
                     { label: '直接持ち込み', value: '2m50cm×1m50cm×1m以内（木材は厚さ20cm未満かつ長さ2m50cm以内）' },
                     { label: '処理施設', value: 'ながの環境エネルギーセンター' },
                   ],
