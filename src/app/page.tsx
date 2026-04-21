@@ -251,11 +251,6 @@ export default function Home() {
           >
             <span>🧠</span>
             <span>自己学習</span>
-            {learningStatus && learningStatus.unanalyzedRaces > 0 && (
-              <span className="bg-yellow-400 text-black text-[9px] font-bold px-1 rounded-full">
-                {learningStatus.unanalyzedRaces}
-              </span>
-            )}
           </button>
         </div>
       </header>
