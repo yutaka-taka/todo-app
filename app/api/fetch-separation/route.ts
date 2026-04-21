@@ -18,7 +18,7 @@ const KANA_LIST = [
   'わ',
 ];
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+const UA = 'Mozilla/5.0 (compatible; NaganoCityGomiBot/1.0)';
 
 async function fetchHtml(url: string): Promise<string | null> {
   try {
@@ -30,30 +30,55 @@ async function fetchHtml(url: string): Promise<string | null> {
   }
 }
 
+// ベースページから かな→URL のマップを構築
+function buildKanaUrlMap(html: string, baseUrl: string): Map<string, string> {
+  const root = parse(html);
+  const base = new URL(baseUrl);
+  const map = new Map<string, string>();
+  for (const a of root.querySelectorAll('a[href]')) {
+    const text = a.text.trim();
+    if (!KANA_LIST.includes(text)) continue;
+    const href = a.getAttribute('href') ?? '';
+    if (!href) continue;
+    const fullUrl = href.startsWith('http') ? href : new URL(href, base).toString();
+    map.set(text, fullUrl);
+  }
+  return map;
+}
+
+// 一覧ページから品目名＋リンクを取得（/gomi/contents/gomikensaku/ を含むリンクのみ）
 function extractItemLinks(html: string, baseUrl: string): { name: string; href: string }[] {
   const root = parse(html);
   const base = new URL(baseUrl);
   const results: { name: string; href: string }[] = [];
-
-  // リンク付きの品目名を取得（a タグのテキスト）
   for (const a of root.querySelectorAll('a[href]')) {
-    const name = a.text.trim().replace(/\s+/g, ' ');
     const href = a.getAttribute('href') ?? '';
-    if (!name || name.length > 80 || !href) continue;
-    // かな一覧ページのナビゲーションリンク等を除外
-    if (KANA_LIST.includes(name) || name.match(/トップ|ホーム|メニュー|検索|一覧|ページ|先頭|前へ|次へ/)) continue;
+    if (!href.includes('/gomi/contents/gomikensaku/')) continue;
+    const name = a.text.trim().replace(/\s+/g, ' ');
+    if (!name || name.length > 100) continue;
     const fullUrl = href.startsWith('http') ? href : new URL(href, base).toString();
-    // 同一ドメインのみ
-    if (!fullUrl.includes(base.hostname)) continue;
     results.push({ name, href: fullUrl });
   }
   return results;
 }
 
+// 詳細ページから分別種別を取得
+// 実際のHTML構造: <h2>分別種別</h2><p><a href="...">不燃ごみ</a></p>
 function extractCategory(html: string): string {
   const root = parse(html);
 
-  // パターン1: <dt>分別種別</dt><dd>xxx</dd>
+  // パターン1（長野市の実際の構造）: h2[text=分別種別] の次の兄弟要素のテキスト
+  for (const h2 of root.querySelectorAll('h2')) {
+    if (h2.text.trim().includes('分別種別')) {
+      const next = h2.nextElementSibling;
+      if (next) {
+        const text = next.text.trim().replace(/\s+/g, '');
+        if (text) return text;
+      }
+    }
+  }
+
+  // パターン2: dt/dd
   for (const dt of root.querySelectorAll('dt')) {
     if (dt.text.trim().includes('分別種別') || dt.text.trim().includes('分別区分')) {
       const dd = dt.nextElementSibling;
@@ -64,60 +89,18 @@ function extractCategory(html: string): string {
     }
   }
 
-  // パターン2: テーブルで「分別種別」ヘッダーの隣セル
+  // パターン3: テーブル
   for (const tr of root.querySelectorAll('tr')) {
     const cells = tr.querySelectorAll('td, th');
     for (let i = 0; i < cells.length - 1; i++) {
-      const header = cells[i].text.trim();
-      if (header.includes('分別種別') || header.includes('分別区分')) {
-        const value = cells[i + 1].text.trim().replace(/\s+/g, ' ');
-        if (value) return value;
+      if (cells[i].text.trim().includes('分別種別')) {
+        const text = cells[i + 1].text.trim().replace(/\s+/g, ' ');
+        if (text) return text;
       }
     }
-  }
-
-  // パターン3: 「分別種別」を含む要素の次の兄弟または子
-  for (const el of root.querySelectorAll('*')) {
-    const text = el.text.trim();
-    if (text === '分別種別' || text === '分別区分') {
-      const next = el.nextElementSibling;
-      if (next) {
-        const value = next.text.trim().replace(/\s+/g, ' ');
-        if (value) return value;
-      }
-    }
-  }
-
-  // パターン4: ページ内の分別種類キーワードを探す
-  const categoryKeywords = ['燃えるごみ', '燃えないごみ', '粗大ごみ', '有害ごみ', '拠点回収',
-    '資源ごみ', '不燃ごみ', '可燃ごみ'];
-  const bodyText = root.text;
-  for (const kw of categoryKeywords) {
-    if (bodyText.includes(kw)) return kw;
   }
 
   return '';
-}
-
-function findKanaUrlPattern(html: string, baseUrl: string): string | null {
-  const root = parse(html);
-  const base = new URL(baseUrl);
-  const links = root.querySelectorAll('a[href]');
-
-  for (const link of links) {
-    const text = link.text.trim();
-    const href = link.getAttribute('href') ?? '';
-    if (!href || !KANA_LIST.includes(text)) continue;
-    const fullUrl = href.startsWith('http') ? href : new URL(href, base).toString();
-    const encodedKana = encodeURIComponent(text);
-    const pattern = fullUrl.includes(encodedKana)
-      ? fullUrl.replace(encodedKana, '{kana}')
-      : fullUrl.includes(text)
-        ? fullUrl.replace(text, '{kana}')
-        : null;
-    if (pattern) return pattern;
-  }
-  return null;
 }
 
 export async function POST(req: NextRequest) {
@@ -132,25 +115,25 @@ export async function POST(req: NextRequest) {
   let totalItems = 0;
 
   try {
+    // ベースページ取得・かなURLマップ構築
     const baseHtml = await fetchHtml(url);
     if (!baseHtml) return Response.json({ error: 'ベースページ取得失敗' }, { status: 502 });
 
-    let urlTemplate = findKanaUrlPattern(baseHtml, url);
-    if (!urlTemplate) {
-      const cleanBase = url.split('?')[0];
-      urlTemplate = `${cleanBase}?row={kana}`;
+    const kanaUrlMap = buildKanaUrlMap(baseHtml, url);
+    if (kanaUrlMap.size === 0) {
+      return Response.json({ error: 'かなボタンのリンクが見つかりませんでした' }, { status: 502 });
     }
 
     for (const kana of KANA_LIST) {
-      try {
-        // 一覧ページに1秒wait
-        await new Promise(r => setTimeout(r, 1000));
+      const kanaUrl = kanaUrlMap.get(kana);
+      if (!kanaUrl) { errors.push(`${kana}: URLマップなし`); continue; }
 
-        const kanaUrl = urlTemplate.replace('{kana}', encodeURIComponent(kana));
-        if (kanaUrl === url) continue;
+      try {
+        // 一覧ページに 500ms wait（サーバー負荷軽減）
+        await new Promise(r => setTimeout(r, 500));
 
         const listHtml = await fetchHtml(kanaUrl);
-        if (!listHtml) { errors.push(`${kana}: 取得失敗`); continue; }
+        if (!listHtml) { errors.push(`${kana}: 一覧ページ取得失敗`); continue; }
 
         const itemLinks = extractItemLinks(listHtml, kanaUrl);
         if (itemLinks.length === 0) continue;
@@ -160,13 +143,10 @@ export async function POST(req: NextRequest) {
 
         for (const { name, href } of itemLinks) {
           try {
-            // 詳細ページに50ms wait
-            await new Promise(r => setTimeout(r, 50));
-
+            // 詳細ページは wait なし（HTTP往復時間 約200-300ms が自然なpacing）
             const detailHtml = await fetchHtml(href);
             const category = detailHtml ? extractCategory(detailHtml) : '';
 
-            // name + category のみ UPSERT（details/keywords は触らない）
             await sql`
               INSERT INTO garbage_items (name, category, source_url, updated_at)
               VALUES (${name}, ${category}, ${url}, NOW())
@@ -188,7 +168,7 @@ export async function POST(req: NextRequest) {
       totalItems,
       insertedCount,
       fetchedKana,
-      errors: errors.slice(0, 20),
+      errors: errors.slice(0, 30),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : '不明なエラー';
