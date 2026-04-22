@@ -15,6 +15,7 @@ export default function CameraModal({ onIdentified, onClose }: Props) {
   const [timeLeft, setTimeLeft] = useState(30);
   const [status, setStatus] = useState<'loading' | 'ready' | 'identifying' | 'done' | 'error'>('loading');
   const [error, setError] = useState('');
+  const [identified, setIdentified] = useState('');
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -33,10 +34,20 @@ export default function CameraModal({ onIdentified, onClose }: Props) {
     if (!videoRef.current || !canvasRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d')?.drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+
+    // 最大1024pxにリサイズ（大きすぎるとAPIタイムアウトの原因になる）
+    const MAX = 1024;
+    let w = video.videoWidth;
+    let h = video.videoHeight;
+    if (w > MAX || h > MAX) {
+      const ratio = Math.min(MAX / w, MAX / h);
+      w = Math.round(w * ratio);
+      h = Math.round(h * ratio);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d')?.drawImage(video, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     const base64 = dataUrl.split(',')[1];
 
     stopCamera();
@@ -50,11 +61,12 @@ export default function CameraModal({ onIdentified, onClose }: Props) {
       });
       const data = await res.json();
       const name: string = data.result ?? '不明';
+      setIdentified(name);
       setStatus('done');
       setTimeout(() => {
         onIdentified(name);
         onClose();
-      }, 800);
+      }, 1000);
     } catch {
       setStatus('error');
       setError('識別に失敗しました');
@@ -142,6 +154,12 @@ export default function CameraModal({ onIdentified, onClose }: Props) {
             <div className="flex flex-col items-center gap-3 py-8">
               <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center text-2xl">✅</div>
               <p className="text-sm text-gray-600 font-medium">識別完了！</p>
+              {identified && identified !== '不明' && (
+                <p className="text-base font-bold text-green-700 bg-green-50 rounded-xl px-4 py-2">{identified}</p>
+              )}
+              {identified === '不明' && (
+                <p className="text-sm text-gray-400">識別できませんでした</p>
+              )}
             </div>
           )}
 

@@ -1,255 +1,78 @@
 import { NextRequest } from 'next/server';
 
-// OCR テキスト（日本語）→ ごみ品名 マッピング（最優先）
-const JAPANESE_TEXT_MAP: [string, string][] = [
-  ['乾電池', '乾電池'],
-  ['蛍光灯', '蛍光灯'],
-  ['スプレー缶', 'スプレー缶'],
-  ['カセットボンベ', 'カセットボンベ'],
-  ['ペットボトル', 'ペットボトル'],
-  ['段ボール', '段ボール'],
-  ['ダンボール', '段ボール'],
-  ['新聞紙', '新聞紙'],
-  ['紙パック', '紙パック'],
-  ['発泡スチロール', '発泡スチロール'],
-  ['陶磁器', '陶磁器'],
-  ['スマートフォン', 'スマートフォン'],
-  ['携帯電話', '携帯電話'],
-  ['電子レンジ', '電子レンジ'],
-  ['洗濯機', '洗濯機'],
-  ['冷蔵庫', '冷蔵庫'],
-  ['掃除機', '掃除機'],
-  ['ドライヤー', 'ドライヤー'],
-  ['アイロン', 'アイロン'],
-  ['パソコン', 'パソコン'],
-  ['テレビ', 'テレビ'],
-  ['自転車', '自転車'],
-  ['タイヤ', 'タイヤ'],
-  ['布団', '布団'],
-  ['毛布', '毛布'],
-  ['ライター', 'ライター'],
-  ['スプレー', 'スプレー缶'],
-  ['電池', '乾電池'],
-  ['蛍光', '蛍光灯'],
-  ['新聞', '新聞紙'],
-  ['雑誌', '雑誌'],
-  ['衣類', '衣類'],
-  ['傘', '傘'],
-  ['小型家電', '小型家電'],
-  ['プラスチック', 'プラ容器'],
-  ['アルミ', '空き缶'],
-  ['ガラスびん', 'びん'],
-  ['ガラス瓶', 'びん'],
-];
+const PROMPT = `この写真に写っているものを、ごみとして分別するための品名を日本語で1つだけ答えてください。
 
-// 英語ラベル → 日本語ごみ品名（具体的・多語フレーズを先に配置）
-const VISION_LABEL_MAP: [string, string][] = [
-  // === 容器・ボトル（具体→汎用の順） ===
-  ['plastic bottle', 'ペットボトル'],
-  ['pet bottle', 'ペットボトル'],
-  ['water bottle', 'ペットボトル'],
-  ['glass bottle', 'びん'],
-  ['aluminum can', '空き缶'],
-  ['aluminium can', '空き缶'],
-  ['tin can', '空き缶'],
-  ['beverage can', '空き缶'],
-  ['beer can', '空き缶'],
-  ['beer bottle', 'びん'],
-  ['wine bottle', 'びん'],
-  ['milk carton', '紙パック'],
-  ['juice carton', '紙パック'],
-  ['food container', 'プラ容器'],
-  ['plastic container', 'プラ容器'],
-  ['plastic tray', 'プラ容器'],
-  ['food tray', 'プラ容器'],
-  ['plastic wrap', 'プラ容器'],
-  ['plastic bag', 'プラ容器'],
-  ['shopping bag', 'プラ容器'],
-  ['styrofoam box', '発泡スチロール'],
-  ['foam box', '発泡スチロール'],
-  ['styrofoam', '発泡スチロール'],
-  ['polystyrene', '発泡スチロール'],
-  ['bottle', 'びん'],
-  ['jar', 'びん'],
-  ['carton', '紙パック'],
-  ['packaging', 'プラ容器'],
-  ['foam', '発泡スチロール'],
-  ['cup', 'コップ'],
-  ['mug', 'マグカップ'],
-  ['wine glass', 'グラス'],
-  // === 紙類 ===
-  ['cardboard box', '段ボール'],
-  ['corrugated box', '段ボール'],
-  ['cardboard', '段ボール'],
-  ['newspaper', '新聞紙'],
-  ['magazine', '雑誌'],
-  ['book', '雑誌'],
-  ['paper bag', '紙袋'],
-  ['envelope', '封筒'],
-  ['paper', '紙'],
-  // === 生ごみ ===
-  ['food waste', '生ごみ'],
-  ['kitchen waste', '生ごみ'],
-  ['vegetable', '生ごみ'],
-  ['fruit', '生ごみ'],
-  ['meat', '生ごみ'],
-  ['bread', '生ごみ'],
-  ['food', '生ごみ'],
-  // === 台所用品 ===
-  ['frying pan', 'フライパン'],
-  ['cooking pan', 'フライパン'],
-  ['pot', '鍋'],
-  ['saucepan', '鍋'],
-  ['cookware', '鍋'],
-  ['plate', '皿'],
-  ['dish', '皿'],
-  ['bowl', '食器'],
-  ['chopsticks', '割り箸'],
-  ['knife', '包丁'],
-  ['kettle', 'やかん'],
-  ['electric kettle', '電気ケトル'],
-  ['thermos', '魔法瓶'],
-  ['pan', 'フライパン'],
-  // === 家電（大型） ===
-  ['washing machine', '洗濯機'],
-  ['refrigerator', '冷蔵庫'],
-  ['fridge', '冷蔵庫'],
-  ['microwave oven', '電子レンジ'],
-  ['microwave', '電子レンジ'],
-  ['vacuum cleaner', '掃除機'],
-  ['air conditioner', 'エアコン'],
-  ['electric fan', '扇風機'],
-  ['fan heater', 'ファンヒーター'],
-  ['space heater', '暖房器具'],
-  ['television', 'テレビ'],
-  ['tv', 'テレビ'],
-  ['flat screen', 'テレビ'],
-  // === 家電（小型） ===
-  ['mobile phone', '携帯電話'],
-  ['smartphone', 'スマートフォン'],
-  ['cell phone', '携帯電話'],
-  ['laptop computer', 'パソコン'],
-  ['laptop', 'パソコン'],
-  ['desktop computer', 'パソコン'],
-  ['personal computer', 'パソコン'],
-  ['computer monitor', 'パソコンモニター'],
-  ['tablet computer', 'タブレット'],
-  ['digital camera', 'デジタルカメラ'],
-  ['game console', 'ゲーム機'],
-  ['video game console', 'ゲーム機'],
-  ['hair dryer', 'ドライヤー'],
-  ['electric iron', 'アイロン'],
-  ['electric toothbrush', '電動歯ブラシ'],
-  ['toaster oven', 'オーブントースター'],
-  ['toaster', 'トースター'],
-  ['coffee maker', 'コーヒーメーカー'],
-  ['printer', 'プリンター'],
-  ['remote control', 'リモコン'],
-  ['camera', 'カメラ'],
-  ['headphones', 'ヘッドホン'],
-  ['earphone', 'イヤホン'],
-  ['clock', '時計'],
-  ['alarm clock', '時計'],
-  ['telephone', '電話機'],
-  ['calculator', '電卓'],
-  ['computer', 'パソコン'],
-  ['monitor', 'パソコンモニター'],
-  // === 電池・照明 ===
-  ['dry cell battery', '乾電池'],
-  ['alkaline battery', '乾電池'],
-  ['battery pack', '乾電池'],
-  ['fluorescent lamp', '蛍光灯'],
-  ['fluorescent light', '蛍光灯'],
-  ['fluorescent tube', '蛍光灯'],
-  ['light bulb', '電球'],
-  ['led bulb', '電球'],
-  ['battery', '乾電池'],
-  // === 危険物 ===
-  ['aerosol can', 'スプレー缶'],
-  ['spray can', 'スプレー缶'],
-  ['spray bottle', 'スプレー缶'],
-  ['fire lighter', 'ライター'],
-  ['cigarette lighter', 'ライター'],
-  ['spray', 'スプレー缶'],
-  ['aerosol', 'スプレー缶'],
-  ['lighter', 'ライター'],
-  // === 衣類・布類 ===
-  ['winter clothing', '衣類'],
-  ['clothing', '衣類'],
-  ['jacket', '衣類'],
-  ['coat', '衣類'],
-  ['shirt', '衣類'],
-  ['trousers', '衣類'],
-  ['jeans', '衣類'],
-  ['dress', '衣類'],
-  ['shoes', '靴'],
-  ['boots', '靴'],
-  ['sneakers', '靴'],
-  ['footwear', '靴'],
-  ['handbag', 'かばん'],
-  ['backpack', 'かばん'],
-  ['suitcase', 'かばん'],
-  ['bag', 'かばん'],
-  ['pillow', '布団類'],
-  ['blanket', '毛布'],
-  ['futon', '布団'],
-  ['duvet', '布団'],
-  // === 大型ごみ ===
-  ['folding umbrella', '傘'],
-  ['umbrella', '傘'],
-  ['bicycle', '自転車'],
-  ['bike', '自転車'],
-  ['sofa', 'ソファ'],
-  ['couch', 'ソファ'],
-  ['furniture', '家具'],
-  ['bookshelf', '本棚'],
-  ['bookcase', '本棚'],
-  ['chair', 'いす'],
-  ['table', 'テーブル'],
-  ['desk', 'デスク'],
-  ['bed', 'ベッド'],
-  ['mattress', 'マットレス'],
-  ['carpet', 'カーペット'],
-  ['rug', 'カーペット'],
-  // === 陶磁器・ガラス ===
-  ['ceramic', '陶磁器'],
-  ['porcelain', '陶磁器'],
-  ['glass', 'びん'],
-  // === その他 ===
-  ['rubber', 'ゴム'],
-  ['tire', 'タイヤ'],
-  ['tyre', 'タイヤ'],
-  ['wood', '木材'],
-];
+以下の候補から最も近いものを選んでください：
+ペットボトル、空き缶、びん、段ボール、新聞紙、雑誌、紙パック、発泡スチロール、プラ容器、
+生ごみ、乾電池、蛍光灯、電球、スプレー缶、ライター、カセットボンベ、
+テレビ、冷蔵庫、洗濯機、エアコン、パソコン、スマートフォン、携帯電話、電子レンジ、掃除機、
+ドライヤー、アイロン、電気ケトル、リモコン、充電器、ゲーム機、
+自転車、傘、家具、いす、テーブル、ベッド、ソファ、本棚、
+衣類、靴、かばん、布団、毛布、
+陶磁器、皿、コップ、鍋、フライパン、包丁、
+ゴム、タイヤ、電池
 
-// フォールバック時に除外する汎用ラベル
-const GENERIC_LABELS = new Set([
-  'person', 'human', 'hand', 'finger', 'arm', 'face', 'skin', 'neck',
-  'close-up', 'macro photography', 'still life', 'still life photography',
-  'photography', 'snapshot', 'product', 'indoor', 'outdoor', 'room',
-  'floor', 'wall', 'ceiling', 'light', 'darkness', 'shadow', 'material',
-  'object', 'item', 'thing', 'surface', 'texture', 'color', 'background',
-]);
+候補にない場合は最も近い日本語のごみ名称を短く答えてください。
+ごみ品名のみを返してください。説明・理由は不要です。識別できない場合のみ「不明」と返してください。`;
 
-function matchLabel(candidate: string, map: [string, string][]): string | null {
-  for (const [key, ja] of map) {
-    if (candidate === key) return ja;
-    if (candidate.includes(key)) return ja;
-    // key.includes(candidate): 4文字以上 かつ key内で単語として含まれる場合のみ
-    if (candidate.length >= 4 && key.split(/\s+/).includes(candidate)) return ja;
+async function tryGemini(image: string, apiKey: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: PROMPT },
+              { inline_data: { mime_type: 'image/jpeg', data: image } },
+            ],
+          }],
+          generationConfig: { maxOutputTokens: 30, temperature: 0 },
+        }),
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+    if (!text || text === '不明') return null;
+    // 改行・余分な句読点を除去して最初の品名のみ返す
+    return text.split(/[\n。、]/)[0].trim();
+  } catch {
+    return null;
   }
-  return null;
 }
 
-export async function POST(req: NextRequest) {
-  const { image } = await req.json();
-  if (!image) return Response.json({ result: '不明' }, { status: 400 });
+// Google Cloud Vision API フォールバック
+const LABEL_MAP: [string, string][] = [
+  ['plastic bottle', 'ペットボトル'], ['pet bottle', 'ペットボトル'], ['water bottle', 'ペットボトル'],
+  ['glass bottle', 'びん'], ['beer bottle', 'びん'], ['wine bottle', 'びん'],
+  ['aluminum can', '空き缶'], ['aluminium can', '空き缶'], ['tin can', '空き缶'], ['beverage can', '空き缶'],
+  ['milk carton', '紙パック'], ['juice carton', '紙パック'],
+  ['cardboard box', '段ボール'], ['corrugated box', '段ボール'], ['cardboard', '段ボール'],
+  ['newspaper', '新聞紙'], ['magazine', '雑誌'], ['book', '雑誌'],
+  ['styrofoam', '発泡スチロール'], ['polystyrene', '発泡スチロール'],
+  ['plastic container', 'プラ容器'], ['food container', 'プラ容器'], ['plastic bag', 'プラ容器'], ['plastic tray', 'プラ容器'],
+  ['dry cell battery', '乾電池'], ['alkaline battery', '乾電池'], ['battery', '乾電池'],
+  ['fluorescent lamp', '蛍光灯'], ['fluorescent light', '蛍光灯'], ['light bulb', '電球'],
+  ['aerosol can', 'スプレー缶'], ['spray can', 'スプレー缶'], ['aerosol', 'スプレー缶'],
+  ['cigarette lighter', 'ライター'], ['lighter', 'ライター'],
+  ['mobile phone', '携帯電話'], ['smartphone', 'スマートフォン'], ['cell phone', '携帯電話'],
+  ['laptop', 'パソコン'], ['computer', 'パソコン'], ['television', 'テレビ'],
+  ['washing machine', '洗濯機'], ['refrigerator', '冷蔵庫'], ['microwave', '電子レンジ'],
+  ['vacuum cleaner', '掃除機'], ['hair dryer', 'ドライヤー'], ['electric iron', 'アイロン'],
+  ['bicycle', '自転車'], ['umbrella', '傘'],
+  ['sofa', 'ソファ'], ['chair', 'いす'], ['table', 'テーブル'], ['bed', 'ベッド'],
+  ['clothing', '衣類'], ['shoes', '靴'], ['bag', 'かばん'], ['blanket', '毛布'],
+  ['ceramic', '陶磁器'], ['frying pan', 'フライパン'], ['pot', '鍋'],
+  ['tire', 'タイヤ'], ['bottle', 'びん'], ['can', '空き缶'],
+  ['electronic device', '小型家電'], ['electronics', '小型家電'],
+  ['plastic', 'プラ容器'], ['glass', 'びん'], ['metal', '空き缶'],
+  ['paper', '紙'], ['food', '生ごみ'], ['carton', '紙パック'],
+];
 
-  const apiKey = process.env.GOOGLE_VISION_API_KEY;
-  if (!apiKey) {
-    return Response.json({ result: '不明', error: 'GOOGLE_VISION_API_KEY が未設定です' });
-  }
-
+async function tryVision(image: string, apiKey: string): Promise<string | null> {
   try {
     const res = await fetch(
       `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
@@ -268,46 +91,60 @@ export async function POST(req: NextRequest) {
         }),
       }
     );
-
-    if (!res.ok) return Response.json({ result: '不明' });
-
+    if (!res.ok) return null;
     const data = await res.json();
-    const annotations = data.responses?.[0] ?? {};
+    const ann = data.responses?.[0] ?? {};
 
-    // OCRテキスト（日本語）→ 最優先でマッチング
-    const fullText: string = annotations.textAnnotations?.[0]?.description ?? '';
-    for (const [keyword, ja] of JAPANESE_TEXT_MAP) {
-      if (fullText.includes(keyword)) {
-        return Response.json({ result: ja });
+    // OCR テキスト（日本語）優先
+    const fullText: string = ann.textAnnotations?.[0]?.description ?? '';
+    const jpKeywords: [string, string][] = [
+      ['乾電池', '乾電池'], ['電池', '乾電池'], ['蛍光灯', '蛍光灯'], ['ライター', 'ライター'],
+      ['スプレー缶', 'スプレー缶'], ['スプレー', 'スプレー缶'], ['ペットボトル', 'ペットボトル'],
+      ['段ボール', '段ボール'], ['新聞紙', '新聞紙'], ['雑誌', '雑誌'],
+      ['紙パック', '紙パック'], ['発泡スチロール', '発泡スチロール'],
+    ];
+    for (const [kw, ja] of jpKeywords) {
+      if (fullText.includes(kw)) return ja;
+    }
+
+    // 物体・ラベル照合（信頼度フィルタなし）
+    const objects: string[] = (ann.localizedObjectAnnotations ?? []).map((o: { name: string }) => o.name.toLowerCase());
+    const labels: string[] = (ann.labelAnnotations ?? []).map((l: { description: string }) => l.description.toLowerCase());
+
+    for (const candidate of [...objects, ...labels]) {
+      for (const [key, ja] of LABEL_MAP) {
+        if (candidate === key || candidate.includes(key)) return ja;
       }
     }
-
-    // 物体認識（スコア 0.5 以上、高スコア優先）
-    const objects: string[] = (annotations.localizedObjectAnnotations ?? [])
-      .filter((o: { score: number }) => o.score >= 0.5)
-      .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
-      .map((o: { name: string }) => o.name.toLowerCase());
-
-    for (const candidate of objects) {
-      const match = matchLabel(candidate, VISION_LABEL_MAP);
-      if (match) return Response.json({ result: match });
-    }
-
-    // ラベル検出（スコア 0.65 以上、高スコア優先）
-    const labels: string[] = (annotations.labelAnnotations ?? [])
-      .filter((l: { score: number }) => l.score >= 0.65)
-      .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
-      .map((l: { description: string }) => l.description.toLowerCase());
-
-    for (const candidate of labels) {
-      const match = matchLabel(candidate, VISION_LABEL_MAP);
-      if (match) return Response.json({ result: match });
-    }
-
-    // フォールバック：汎用ラベルを除外して最上位のラベルを返す
-    const meaningfulLabel = labels.find(l => !GENERIC_LABELS.has(l));
-    return Response.json({ result: meaningfulLabel ?? '不明' });
+    return null;
   } catch {
-    return Response.json({ result: '不明' });
+    return null;
   }
+}
+
+export async function POST(req: NextRequest) {
+  const { image } = await req.json();
+  if (!image) return Response.json({ result: '不明' }, { status: 400 });
+
+  // Gemini API キー（専用 or Vision キーを兼用）
+  const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_VISION_API_KEY;
+  const visionKey = process.env.GOOGLE_VISION_API_KEY;
+
+  if (!geminiKey && !visionKey) {
+    return Response.json({ result: '不明', error: 'APIキーが未設定です' });
+  }
+
+  // 1. Gemini Vision（高精度・日本語直接応答）
+  if (geminiKey) {
+    const geminiResult = await tryGemini(image, geminiKey);
+    if (geminiResult) return Response.json({ result: geminiResult });
+  }
+
+  // 2. Google Cloud Vision（フォールバック）
+  if (visionKey) {
+    const visionResult = await tryVision(image, visionKey);
+    if (visionResult) return Response.json({ result: visionResult });
+  }
+
+  return Response.json({ result: '不明' });
 }
