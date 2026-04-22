@@ -110,7 +110,7 @@ export default function Home() {
     const materials = ['プラスチック', 'ペットボトル', 'アルミ', 'スチール', '金属', 'ガラス', 'びん',
       '陶磁器', 'ゴム', '革', '木', '紙', '布', '段ボール', '発泡スチロール', '缶', 'プラ'];
     const searchTerm = materials.find(m => candidate.includes(m)) ?? candidate;
-    setQuery(searchTerm);  // 実際に検索するキーワードを入力欄に表示
+    setQuery(searchTerm);
     setShowCamera(false);
     await handleSearch(searchTerm);
   };
