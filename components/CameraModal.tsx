@@ -60,6 +60,9 @@ export default function CameraModal({ onIdentified, onClose }: Props) {
         body: JSON.stringify({ image: base64 }),
       });
       const data = await res.json();
+      // デバッグ：ログに詳細を出力
+      if (data.logs) console.warn('[Camera] identify logs:', data.logs);
+      if (data.log) console.info('[Camera] identify log:', data.log);
       const name: string = data.result ?? '不明';
       setIdentified(name);
       setStatus('done');
@@ -67,7 +70,8 @@ export default function CameraModal({ onIdentified, onClose }: Props) {
         onIdentified(name);
         onClose();
       }, 1000);
-    } catch {
+    } catch (e) {
+      console.error('[Camera] fetch error:', e);
       setStatus('error');
       setError('識別に失敗しました');
     }
