@@ -4,6 +4,30 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 })
 
+function extractJSON(text: string): string {
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (codeBlock) return codeBlock[1].trim()
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 1)
+  return text
+}
+
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  let lastError: Error = new Error('unknown')
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e))
+      if (attempt < maxRetries - 1) {
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
+      }
+    }
+  }
+  throw lastError
+}
+
 export interface PredictionEntry {
   horseNumber: number
   horseName: string
@@ -11,6 +35,8 @@ export interface PredictionEntry {
   age?: number | null
   sex?: string | null
   weight?: number | null
+  horseWeight?: number | null
+  weightChange?: number | null
 }
 
 export interface PredictionFactor {
@@ -44,15 +70,20 @@ export async function generatePrediction(params: {
   entries: PredictionEntry[]
   algorithmRules: string
 }): Promise<PredictionResponse> {
-  const { raceName, raceDate, venue, surface, distance, grade, entries, algorithmRules } = params
+  const { raceName, raceDate, venue, surface, distance, grade, entries } = params
+  const algorithmRules = params.algorithmRules.length > 1500
+    ? params.algorithmRules.slice(0, 1500) + '\n...(以降省略)'
+    : params.algorithmRules
 
   const entriesSection =
     entries.length > 0
       ? `【確定出走馬一覧】\n${entries
-          .map(
-            (e) =>
-              `${e.horseNumber}番 ${e.horseName}${e.jockey ? ` 騎手:${e.jockey}` : ''}${e.age ? ` ${e.age}歳` : ''}${e.sex || ''}`
-          )
+          .map((e) => {
+            const weightInfo = (e.horseWeight != null || e.weightChange != null)
+              ? ` 体重:${e.horseWeight ?? '?'}kg${e.weightChange != null ? `(前走比${e.weightChange > 0 ? '+' : ''}${e.weightChange}kg)` : ''}`
+              : ''
+            return `${e.horseNumber}番 ${e.horseName}${e.jockey ? ` 騎手:${e.jockey}` : ''}${e.age ? ` ${e.age}歳` : ''}${e.sex || ''}${weightInfo}`
+          })
           .join('\n')}`
       : `【出走馬】\n出走馬はまだ確定していません。このレースの過去の出走傾向や、現在活躍中の有力馬から上位候補を独自に選定して予測してください。`
 
@@ -70,16 +101,6 @@ ${entriesSection}
 【予想アルゴリズムルール】
 ${algorithmRules}
 
-【分析観点】
-1. 過去の重賞実績（G1での連対経験を特に重視）
-2. 距離適性（${distance}mでの実績）
-3. ${venue}競馬場での実績
-4. 直近の調子・成績推移
-5. 騎手の重賞勝利率とこのコースでの相性
-6. 血統的な適性（芝・ダート、距離適性）
-7. 前走からの間隔と仕上がり
-8. 斤量変化の影響
-
 連対率が高い順に上位5頭を以下のJSON形式のみで返してください。JSON以外のテキストは一切含めないでください：
 
 {
@@ -90,7 +111,7 @@ ${algorithmRules}
       "horseName": "馬名",
       "placeRate": 68.5,
       "factors": {
-        "recentForm": "直近成績の評価（例：直近5走で4回連対、G1でも2着経験あり）",
+        "recentForm": "直近成績の評価",
         "distanceSuitability": "距離適性の評価",
         "courseRecord": "コース実績の評価",
         "jockeyStats": "騎手の評価",
@@ -98,29 +119,25 @@ ${algorithmRules}
       }
     }
   ],
-  "analysis": "レース全体の展望と見どころ（3-4文）"
+  "analysis": "レース全体の展望と見どころ（2-3文）"
 }
 
-重要：
-- placeRateは30〜80の範囲で設定
-- 出走馬が未確定の場合は、過去の出走傾向からの有力候補を名前付きで予測
-- 必ずJSON形式のみで返答`
+重要: placeRateは30〜80の範囲。必ずJSON形式のみで返答。`
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 2048,
-    system: `あなたはJRA競馬の専門アナリストです。過去のレースデータ、血統、騎手成績、調教内容を総合的に分析し、各馬の連対率を精密に算出します。必ずJSON形式のみで返答してください。`,
-    messages: [{ role: 'user', content: prompt }],
+  return withRetry(async () => {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2048,
+      system: `あなたはJRA競馬の専門アナリストです。各馬の連対率を精密に算出します。必ずJSON形式のみで返答してください。`,
+      messages: [{ role: 'user', content: prompt }],
+    })
+
+    const content = message.content[0]
+    if (content.type !== 'text') throw new Error('予期しないレスポンス形式')
+
+    const jsonText = extractJSON(content.text.trim())
+    return JSON.parse(jsonText) as PredictionResponse
   })
-
-  const content = message.content[0]
-  if (content.type !== 'text') throw new Error('予期しないレスポンス形式')
-
-  const text = content.text.trim()
-  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const jsonText = jsonMatch ? jsonMatch[1].trim() : text
-
-  return JSON.parse(jsonText) as PredictionResponse
 }
 
 // ---- 自己学習用 ----
@@ -132,21 +149,17 @@ export interface LearnedInsight {
   applicableCases: string
 }
 
-export interface HorseStatData {
+// 馬別基本成績（シンプルな5フィールドのみ）
+export interface SimpleHorseStat {
   horseName: string
   totalRaces: number
   totalPlaces: number
   g1Races: number
   g1Places: number
-  distanceData: Record<string, { races: number; places: number }>
-  venueData: Record<string, { races: number; places: number }>
-  surfaceData: Record<string, { races: number; places: number }>
-  recentForm: string
-  lastRaceDate?: string
 }
 
 export interface LearningResult {
-  horseStats: HorseStatData[]
+  horseStats: SimpleHorseStat[]
   newInsights: LearnedInsight[]
   updatedRules: string
   keyPatterns: string[]
@@ -154,84 +167,129 @@ export interface LearningResult {
   summary: string
 }
 
-export async function analyzeRacesForLearning(params: {
-  racesData: string
-  currentRules: string
-}): Promise<LearningResult> {
-  const { racesData, currentRules } = params
+export interface UpcomingHorseStat {
+  horseName: string
+  totalRaces: number
+  totalPlaces: number
+  g1Races: number
+  g1Places: number
+  recentForm: string
+  recentNote: string
+}
 
-  const prompt = `以下の過去重賞レースを詳細に分析し、連対率予測アルゴリズムを改善してください。
+export async function refreshUpcomingRaceHorses(params: {
+  raceName: string
+  venue: string
+  surface: string
+  distance: number
+  grade: string
+  raceDate: string
+  horseNames: string[]
+}): Promise<UpcomingHorseStat[]> {
+  const { raceName, venue, surface, distance, grade, raceDate, horseNames } = params
 
-【分析対象レース】
-${racesData}
+  const prompt = `以下の週末G1レースに出走する馬について、あなたの知識に基づいた通算成績と直近フォームを教えてください。
 
-【現在の予想ルール】
-${currentRules}
+【レース】${raceName}（${raceDate} ${venue} ${surface}${distance}m ${grade}）
 
-【分析タスク A: アルゴリズム改善】
-1. 各レースの1着・2着馬の共通点・パターンを特定
-2. 人気馬が馬券外に飛んだ要因を分析
-3. 穴馬・低人気馬が好走した理由を抽出
-4. 距離・コース・季節・馬場状態による傾向
-5. 騎手・調教師コンビの影響度
-6. 血統的傾向
+【出走馬】${horseNames.join('、')}
 
-【分析タスク B: 馬別成績データ抽出】
-分析対象レースに登場した各馬について、あなたの知識から以下を推定してください：
-- 通算出走数・連対数（概算でよい）
-- G1での出走数・連対数
-- 得意距離・競馬場・馬場（芝/ダート）
-- 直近5走の着順（1-2-3-4-5着で表記、例: "1-2-3-1-2"）
-
-以下のJSON形式のみで返してください。JSON以外のテキストは一切含めないでください：
+以下のJSON形式のみで返してください（JSON以外のテキストは一切含めないでください）：
 
 {
-  "horseStats": [
+  "horses": [
     {
       "horseName": "馬名",
       "totalRaces": 20,
       "totalPlaces": 12,
       "g1Races": 5,
       "g1Places": 3,
-      "distanceData": {"3200": {"races": 4, "places": 3}, "3000": {"races": 2, "places": 1}},
-      "venueData": {"京都": {"races": 5, "places": 3}, "阪神": {"races": 4, "places": 2}},
-      "surfaceData": {"芝": {"races": 20, "places": 12}},
-      "recentForm": "1-1-2-3-1",
-      "lastRaceDate": "2024-04"
+      "recentForm": "1-2-1-3-2",
+      "recentNote": "直近フォームの一言評価"
     }
-  ],
-  "newInsights": [
-    {
-      "category": "カテゴリ（例：距離適性, 騎手評価, 血統等）",
-      "insight": "具体的な学習知見",
-      "confidence": 0.85,
-      "applicableCases": "この知見が適用できる条件"
-    }
-  ],
-  "updatedRules": "改善された予想ルール全文",
-  "keyPatterns": ["重要パターン1", "重要パターン2", "重要パターン3"],
-  "estimatedAccuracy": 65.5,
-  "summary": "今回の学習で得られた主要な知見（3-4文）"
+  ]
 }
 
-重要: horseStatsには分析レースに登場した主な馬を含めてください。わからない場合は0で埋めてください。`
+注意:
+- 知識がない馬は省略してください
+- recentFormは最近5走の着順（新しい順、不明な場合は空文字）
+- totalRacesは通算出走数（不明な場合はG1出走数から推定）`
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 8096,
-    system: `あなたはJRA競馬の機械学習システムです。過去のレース結果を客観的に分析し、連対率予測の精度を向上させる知見と馬別データを抽出します。必ずJSON形式のみで返答してください。`,
-    messages: [{ role: 'user', content: prompt }],
+  return withRetry(async () => {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      system: `あなたはJRA競馬の専門アナリストです。出走馬の最新情報をJSON形式のみで返答してください。`,
+      messages: [{ role: 'user', content: prompt }],
+    })
+
+    const content = message.content[0]
+    if (content.type !== 'text') throw new Error('予期しないレスポンス形式')
+
+    const jsonText = extractJSON(content.text.trim())
+    const result = JSON.parse(jsonText) as { horses: UpcomingHorseStat[] }
+    return Array.isArray(result.horses) ? result.horses : []
   })
+}
 
-  const content = message.content[0]
-  if (content.type !== 'text') throw new Error('予期しないレスポンス形式')
+export async function analyzeRacesForLearning(params: {
+  racesData: string
+  currentRules: string
+}): Promise<LearningResult> {
+  // 学習を繰り返すとrulesが肥大化するため切り詰め
+  const currentRules = params.currentRules.length > 1200
+    ? params.currentRules.slice(0, 1200) + '\n...(以降省略)'
+    : params.currentRules
 
-  const text = content.text.trim()
-  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const jsonText = jsonMatch ? jsonMatch[1].trim() : text
+  const prompt = `以下の過去重賞レースを分析し、連対率予測アルゴリズムを改善してください。
 
-  const result = JSON.parse(jsonText) as LearningResult
-  // horseStats が未定義の場合は空配列
-  if (!result.horseStats) result.horseStats = []
-  return result
+【分析対象レース】
+${params.racesData}
+
+【現在の予想ルール】
+${currentRules}
+
+以下のJSON形式のみで返してください（JSON以外のテキストは一切含めないでください）：
+
+{
+  "horseStats": [
+    {"horseName": "馬名", "totalRaces": 20, "totalPlaces": 12, "g1Races": 5, "g1Places": 3}
+  ],
+  "newInsights": [
+    {"category": "カテゴリ", "insight": "学習知見", "confidence": 0.85, "applicableCases": "適用条件"}
+  ],
+  "updatedRules": "改善された予想ルール（500文字以内）",
+  "keyPatterns": ["パターン1", "パターン2", "パターン3"],
+  "estimatedAccuracy": 65.5,
+  "summary": "今回の学習で得られた主要な知見（1-2文）"
+}
+
+注意事項:
+- horseStatsは必須です。各レースの上位5頭（1〜5着）を必ずリストしてください。結果データがない場合もあなたの知識から記入してください。
+- totalRacesはその馬の通算出走数、totalPlacesは通算2着以内の回数です。不明な場合はG1実績から推定してください。
+- totalRaces: 0の馬は含めないでください
+- updatedRulesは500文字以内で簡潔に記述してください
+- summaryは1〜2文で簡潔に`
+
+  return withRetry(async () => {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      system: `あなたはJRA競馬の機械学習システムです。過去のレース結果を客観的に分析し、連対率予測の精度を向上させる知見を抽出します。horseStatsは必ず各レースの上位5頭以上を含めてください。必ずJSON形式のみで返答してください。`,
+      messages: [{ role: 'user', content: prompt }],
+    })
+
+    const content = message.content[0]
+    if (content.type !== 'text') throw new Error('予期しないレスポンス形式')
+
+    const jsonText = extractJSON(content.text.trim())
+    const result = JSON.parse(jsonText) as LearningResult
+    if (!Array.isArray(result.horseStats)) result.horseStats = []
+    if (!Array.isArray(result.newInsights)) result.newInsights = []
+    if (!Array.isArray(result.keyPatterns)) result.keyPatterns = []
+    if (!result.summary) result.summary = '分析完了'
+    if (!result.updatedRules) result.updatedRules = params.currentRules
+    if (typeof result.estimatedAccuracy !== 'number') result.estimatedAccuracy = 0
+    return result
+  })
 }
