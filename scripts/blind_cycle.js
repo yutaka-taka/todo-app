@@ -205,12 +205,13 @@ function getRestIntervalBonus(stat, raceDate) {
   }
   const isTakiType = takiCount >= 2
 
-  if (days <= 13)      return wasLikelyPrep && isTakiType ? -1 : -8  // 超短期: 大ペナルティ
+  if (days <= 13)      return wasLikelyPrep && isTakiType ? -1 : -8
   else if (days <= 20) return wasLikelyPrep ? (isTakiType ? 2 : 0) : -3
-  else if (days <= 35) return wasLikelyPrep ? (isTakiType ? 5 : 2) : 0  // 叩き良化ボーナス
-  // G1馬の標準的な長期休養（36日超）はペナルティなし
-  // リアルタイム予想と異なりブラインドテストでは長期休養の影響を中立とする
-  return 0
+  else if (days <= 35) return wasLikelyPrep ? (isTakiType ? 5 : 2) : 0
+  else if (days <= 56) return -1
+  else if (days <= 84) return -1   // G1馬の中期休養は中立寄りに
+  else if (days <= 150) return -3  // 長期休養もペナルティ軽減
+  return -5                         // 超長期
 }
 
 function buildScore(entry, race, stat, weights, jockeyStatsMap) {
@@ -235,15 +236,27 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap) {
   const cappedBase = Math.min(effectiveBase, 60)
   const bonuses = {}
 
+  // G1初挑戦時に前哨戦連対実績があるか確認
+  let hasPrepWin = false
+  if (stat.g1Races === 0 && race.name && stat.raceNameData) {
+    const currentBase0 = race.name.replace(/\s*\d{4}年?\s*$/, '').trim()
+    const prepList0 = PREP_RACES[currentBase0] || []
+    for (const prepName0 of prepList0) {
+      const pd0 = stat.raceNameData[prepName0]
+      if (pd0 && pd0.places >= 1) { hasPrepWin = true; break }
+    }
+  }
+
   // G1実績
   let g1Bonus = 0
   if (stat.g1Races === 0) {
     const r = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
     if (age === 3 && stat.totalRaces >= 2) {
-      // 3歳G1初挑戦: 良績なら初挑戦ペナルティを軽減（春G1で無敗の新鋭を正当評価）
       g1Bonus = r >= 0.70 ? 3 : r >= 0.50 ? 0 : r >= 0.30 ? -3 : -6
+      if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)
     } else {
       g1Bonus = r >= 0.45 ? -3 : r >= 0.30 ? -5 : -8
+      if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 5, 0)
     }
   } else {
     const r = stat.g1Places / stat.g1Races
@@ -315,10 +328,12 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap) {
       else                 formBonus = -4
       if (pos.length >= 2 && pos[0] <= 2 && pos[1] <= 2) formBonus += 5
       if (pos[0] === 1) formBonus += 3
-      // 3連勝以上: 圧倒的フォームへの追加ボーナス
+      // 3連勝以上
       if (pos.length >= 3 && pos[0] === 1 && pos[1] === 1 && pos[2] === 1) formBonus += 5
-      // 巻き返し候補: 前走大失敗 + 前々走以前は連続好走（ゲートトラブル等の一発失敗後）
+      // 巻き返し候補: 前走大失敗 + 前々走以前は連続好走
       if (pos.length >= 3 && pos[0] >= 8 && pos[1] <= 2 && pos[2] <= 2) formBonus += 6
+      // 叩き良化候補: 前走4-5着も2-3走前に連続好走
+      if (pos.length >= 3 && pos[0] >= 4 && pos[0] <= 5 && pos[1] <= 2 && pos[2] <= 3) formBonus += 4
     }
   }
   bonuses.recentForm = Math.round(formBonus * (weights.recentFormMult || 1))
@@ -416,10 +431,14 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap) {
     potentialBonus = (stat.g1Places / stat.g1Races) >= 0.5 ? 10 : 7
   } else if (stat.totalRaces <= 4 && stat.totalPlaces >= 2) {
     potentialBonus = 5
+  } else if (stat.totalRaces <= 3 && stat.totalPlaces >= 1 && stat.g1Races === 0) {
+    potentialBonus = 3  // 少数戦新鋭: 連対実績あり伏兵
   }
 
   const totalBonus = Object.values(bonuses).reduce((a, b) => a + b, 0) + potentialBonus + trendBonus
-  return { score: Math.round(Math.max(20, cappedBase + totalBonus) * 10) / 10, bonuses }
+  // G1経験2戦以上の馬は最低スコアを底上げ（掲示板常連馬の過小評価防止）
+  const minFloor = (race.grade === 'G1' && stat.g1Races >= 2) ? 24 : 20
+  return { score: Math.round(Math.max(minFloor, cappedBase + totalBonus) * 10) / 10, bonuses }
 }
 
 function applyRankCaps(scored) {
@@ -717,9 +736,16 @@ async function main() {
   const gridCandidates = [
     { label: 'DEFAULT', w: { ...DEFAULT_WEIGHTS } },
     { label: 'recentForm+', w: { ...finalWeights, recentFormMult: Math.min(1.8, finalWeights.recentFormMult + 0.12) } },
-    { label: 'raceAffinity+', w: { ...finalWeights, raceAffinityMult: 1.12 } },
+    { label: 'recentForm-', w: { ...finalWeights, recentFormMult: Math.max(0.30, finalWeights.recentFormMult - 0.12) } },
+    { label: 'raceAffinity+', w: { ...finalWeights, raceAffinityMult: 1.15 } },
+    { label: 'raceAffinity++', w: { ...finalWeights, raceAffinityMult: 1.30 } },
     { label: 'g1+', w: { ...finalWeights, g1Mult: Math.min(1.8, (finalWeights.g1Mult || 0.85) + 0.10) } },
+    { label: 'g1-', w: { ...finalWeights, g1Mult: Math.max(0.30, (finalWeights.g1Mult || 0.85) - 0.10) } },
     { label: 'jockey+', w: { ...finalWeights, jockeyMult: Math.min(1.8, (finalWeights.jockeyMult || 0.95) + 0.12) } },
+    { label: 'jockey-', w: { ...finalWeights, jockeyMult: Math.max(0.30, (finalWeights.jockeyMult || 1.10) - 0.12) } },
+    { label: 'distance+', w: { ...finalWeights, distanceMult: Math.min(1.8, finalWeights.distanceMult + 0.10) } },
+    { label: 'venue+', w: { ...finalWeights, venueMult: Math.min(1.8, finalWeights.venueMult + 0.10) } },
+    { label: 'g1Venue', w: { ...finalWeights, g1Mult: Math.min(1.8, (finalWeights.g1Mult||0.9)+0.10), venueMult: Math.min(1.8, finalWeights.venueMult+0.10) } },
   ]
   let bestLabel = 'current', bestAcc = finalAccuracy, bestW = finalWeights
   for (const { label, w } of gridCandidates) {

@@ -20,13 +20,13 @@ export interface LocalWeights {
 }
 
 export const DEFAULT_WEIGHTS: LocalWeights = {
-  recentFormMult:       0.73,
+  recentFormMult:       0.97,
   distanceMult:         1.28,
   venueMult:            1.15,
   surfaceMult:          1.05,
   g1Mult:               0.80,
   ageMult:              0.50,
-  jockeyMult:           1.10,
+  jockeyMult:           0.86,
   raceAffinityMult:     1.0,
   trackCondMult:        1.0,
   // 新因子はすべて 1.0 から開始（自己学習で最適化）
@@ -310,11 +310,11 @@ function getRestIntervalBonus(
   } else if (days <= 56) {
     return -1
   } else if (days <= 84) {
-    return -3
+    return -1  // G1馬の中期休養は中立寄りに
   } else if (days <= 150) {
-    return -5
+    return -3  // 長期休養もペナルティ軽減
   }
-  return -8
+  return -5  // 超長期もG1馬なら過剰ペナルティを避ける
 }
 
 function getPaceBonus(runningStyle: string | null | undefined, paceType: 'high' | 'medium' | 'slow'): number {
@@ -487,6 +487,9 @@ function buildScore(
       if (positions.length >= 3 && positions[0] === 1 && positions[1] === 1 && positions[2] === 1) recentFormBonus += 5
       // 巻き返し候補: 前走大失敗 + 前々走以前は連続好走（ゲートトラブル等の一発失敗後）
       if (positions.length >= 3 && positions[0] >= 8 && positions[1] <= 2 && positions[2] <= 2) recentFormBonus += 6
+      // 叩き良化候補: 前走4-5着も2-3走前に連続好走（仕上げ不足からの変わり身）
+      if (positions.length >= 3 && positions[0] >= 4 && positions[0] <= 5 &&
+          positions[1] <= 2 && positions[2] <= 3) recentFormBonus += 4
     }
   }
 
@@ -564,6 +567,17 @@ function buildScore(
   }
 
   // --- G1実績 ---
+  // G1初挑戦時に前哨戦連対実績があるか先確認（ペナルティ緩和用）
+  let hasPrepWin = false
+  if (race.grade === 'G1' && stat.g1Races === 0 && race.name && stat.raceNameData) {
+    const currentRaceBase0 = race.name.replace(/\s*\d{4}年?\s*$/, '').trim()
+    const prepList0 = PREP_RACES[currentRaceBase0] ?? []
+    for (const prepName0 of prepList0) {
+      const pd0 = (stat.raceNameData as StatRecord)[prepName0]
+      if (pd0 && pd0.places >= 1) { hasPrepWin = true; break }
+    }
+  }
+
   let g1Bonus = 0
   let g1Note = ''
   if (race.grade === 'G1') {
@@ -573,9 +587,11 @@ function buildScore(
       if (is3yoDebut) {
         // 3歳G1初挑戦: 良績なら初挑戦ペナルティを軽減（無敗の新鋭を正当評価）
         g1Bonus = overallRate >= 0.70 ? 3 : overallRate >= 0.50 ? 0 : overallRate >= 0.30 ? -3 : -6
+        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)  // 前哨戦連対でペナルティ緩和
         g1Note = `3歳G1初挑戦(連対率${Math.round(overallRate*100)}%)`
       } else {
         g1Bonus = overallRate >= 0.45 ? -3 : overallRate >= 0.30 ? -5 : -8
+        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 5, 0)  // 前哨戦連対でペナルティ緩和
         g1Note = overallRate >= 0.30 ? `G1初挑戦(連対率${Math.round(overallRate*100)}%)` : 'G1初挑戦'
       }
     } else {
@@ -651,6 +667,8 @@ function buildScore(
     potentialBonus = g1Rate >= 0.5 ? 10 : 7
   } else if (stat.totalRaces <= 4 && stat.totalPlaces >= 2) {
     potentialBonus = 5
+  } else if (stat.totalRaces <= 3 && stat.totalPlaces >= 1 && stat.g1Races === 0) {
+    potentialBonus = 3  // 少数戦新鋭: 連対実績あり伏兵
   }
 
   // --- フォームトレンド ---
@@ -759,7 +777,9 @@ function buildScore(
     + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace
 
   const cappedBase = Math.min(effectiveBase, 60)
-  const finalRate  = Math.max(20, cappedBase + totalBonus)
+  // G1経験2戦以上の馬は最低スコアを底上げ（掲示板常連馬の過小評価防止）
+  const minFloor = (race.grade === 'G1' && stat.g1Races >= 2) ? 24 : 20
+  const finalRate  = Math.max(minFloor, cappedBase + totalBonus)
 
   const reason = [
     `ベース連対率${(baseSmoothed * 100).toFixed(0)}%(${stat.totalRaces}戦)`,
