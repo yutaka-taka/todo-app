@@ -206,6 +206,12 @@ export default function Home() {
   const [showWeightForm, setShowWeightForm] = useState(false)
   const [horseWeightInputs, setHorseWeightInputs] = useState<Record<string, { weight: string; weightChange: string }>>({})
 
+  // 調教・詳細入力（上がり3F・脚質）
+  const [showDetailForm, setShowDetailForm] = useState(false)
+  const [horseDetailInputs, setHorseDetailInputs] = useState<Record<string, { lastThreeFurlong: string; runningStyle: string }>>({})
+  const [fetchingTraining, setFetchingTraining] = useState(false)
+  const [fetchTrainingMsg, setFetchTrainingMsg] = useState<string | null>(null)
+
   // 天気・馬場状態
   const [weatherData, setWeatherData] = useState<{ weather: string; temperature: number; precipMm: number; conditionEstimate: string; icon: string } | null>(null)
   const [trackCondition, setTrackCondition] = useState<string>('良')
@@ -498,10 +504,23 @@ export default function Home() {
         }
       }
 
+      // 調教・詳細データを整形（上がり3F・脚質）
+      const trainingData: Record<string, { lastThreeFurlong: number | null; runningStyle: string | null }> = {}
+      for (const [name, inputs] of Object.entries(horseDetailInputs)) {
+        const ltf = inputs.lastThreeFurlong !== '' ? parseFloat(inputs.lastThreeFurlong) : null
+        const hasSomething = (ltf !== null && !isNaN(ltf)) || inputs.runningStyle
+        if (hasSomething) {
+          trainingData[name] = {
+            lastThreeFurlong: ltf !== null && !isNaN(ltf) ? ltf : null,
+            runningStyle: inputs.runningStyle || null,
+          }
+        }
+      }
+
       const res = await fetch('/api/predict', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raceId: selectedRace.id, horseWeights, trackCondition }),
+        body: JSON.stringify({ raceId: selectedRace.id, horseWeights, trackCondition, trainingData }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
@@ -513,6 +532,35 @@ export default function Home() {
       setPredictError(e instanceof Error ? e.message : '予想の生成に失敗しました')
     } finally {
       setPredicting(false)
+    }
+  }
+
+  const handleFetchTraining = async () => {
+    if (!selectedRace) return
+    setFetchingTraining(true)
+    setFetchTrainingMsg(null)
+    try {
+      const res = await fetch('/api/fetch-training', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raceId: selectedRace.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      // 取得結果でフォームを上書き
+      const newInputs: Record<string, { lastThreeFurlong: string; runningStyle: string }> = {}
+      for (const [name, result] of Object.entries(data.results as Record<string, { lastThreeFurlong: number | null; runningStyle: string | null }>)) {
+        newInputs[name] = {
+          lastThreeFurlong: result.lastThreeFurlong != null ? String(result.lastThreeFurlong) : '',
+          runningStyle: result.runningStyle ?? '',
+        }
+      }
+      setHorseDetailInputs(newInputs)
+      setFetchTrainingMsg(data.message ?? '取得完了')
+    } catch (e) {
+      setFetchTrainingMsg(`取得失敗: ${e instanceof Error ? e.message : 'エラー'}`)
+    } finally {
+      setFetchingTraining(false)
     }
   }
 
@@ -1592,6 +1640,123 @@ export default function Home() {
                   </button>
                 )}
                 </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 上がり3F・脚質入力カード */}
+        {selectedRace && (
+          <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden">
+            <button
+              className="w-full flex items-center justify-between px-4 py-3"
+              onClick={() => setShowDetailForm(!showDetailForm)}
+            >
+              <span className="text-sm font-bold text-white flex items-center gap-2">
+                <span>📊</span>
+                <span>上がり3F・脚質（任意）</span>
+              </span>
+              <div className="flex items-center gap-2">
+                {(() => {
+                  const filled = Object.values(horseDetailInputs).filter((v) => v.lastThreeFurlong || v.runningStyle).length
+                  return filled > 0 ? (
+                    <span className="text-[10px] text-yellow-400 font-bold">{filled}頭入力済み</span>
+                  ) : (
+                    <span className="text-[10px] text-slate-500">netkeiba から一括取得可</span>
+                  )
+                })()}
+                <span className="text-slate-500 text-xs">{showDetailForm ? '▲' : '▼'}</span>
+              </div>
+            </button>
+            {showDetailForm && (
+              <div className="px-4 pb-4 border-t border-[#1e2d4a]">
+                {selectedRace.entries.length === 0 ? (
+                  <p className="py-3 text-xs text-slate-400 text-center">出走馬未登録。「↻ 週末レース 出走馬を再検証」を実行してください</p>
+                ) : (
+                  <>
+                  {/* 一括取得ボタン */}
+                  <div className="pt-3 pb-2">
+                    <button
+                      onClick={handleFetchTraining}
+                      disabled={fetchingTraining}
+                      className="w-full py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 bg-[#080c18] border border-cyan-700/50 text-cyan-400 hover:border-cyan-400/70 active:scale-95"
+                    >
+                      {fetchingTraining ? (
+                        <>
+                          <Spinner size={3} />
+                          <span>netkeiba から取得中... ({selectedRace.entries.length}頭)</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>🌐</span>
+                          <span>netkeiba から上がり3F・脚質を一括取得</span>
+                        </>
+                      )}
+                    </button>
+                    {fetchTrainingMsg && (
+                      <p className={`mt-1.5 text-[10px] text-center ${fetchTrainingMsg.includes('失敗') ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {fetchTrainingMsg}
+                      </p>
+                    )}
+                    <p className="mt-1 text-[9px] text-slate-600 text-center">取得後に手動修正も可能です。脚質は4頭以上で展開予測が有効になります。</p>
+                  </div>
+                  <div className="grid grid-cols-[auto_1fr_72px_52px] gap-x-2 px-1 py-1.5 border-t border-[#1e2d4a]">
+                    <span className="text-[9px] text-slate-600"></span>
+                    <span className="text-[9px] text-slate-600"></span>
+                    <span className="text-[9px] text-slate-600 text-right">上がり3F秒</span>
+                    <span className="text-[9px] text-slate-600 text-center">脚質</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {selectedRace.entries.map((entry) => {
+                      const key = entry.horseName
+                      const inputs = horseDetailInputs[key] ?? { lastThreeFurlong: '', runningStyle: '' }
+                      return (
+                        <div key={entry.horseNumber} className="grid grid-cols-[auto_1fr_72px_52px] gap-x-2 items-center">
+                          <span className="text-[10px] text-slate-500 w-6 text-right">{entry.horseNumber}.</span>
+                          <span className="text-xs text-white truncate">{entry.horseName}</span>
+                          {/* 上がり3F */}
+                          <input
+                            type="number"
+                            value={inputs.lastThreeFurlong}
+                            onChange={(e) => setHorseDetailInputs((prev) => ({
+                              ...prev,
+                              [key]: { ...(prev[key] ?? { lastThreeFurlong: '', runningStyle: '' }), lastThreeFurlong: e.target.value },
+                            }))}
+                            placeholder="33.5"
+                            step="0.1"
+                            min={30}
+                            max={42}
+                            className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
+                          />
+                          {/* 脚質 */}
+                          <select
+                            value={inputs.runningStyle}
+                            onChange={(e) => setHorseDetailInputs((prev) => ({
+                              ...prev,
+                              [key]: { ...(prev[key] ?? { lastThreeFurlong: '', runningStyle: '' }), runningStyle: e.target.value },
+                            }))}
+                            className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-1 py-1 text-xs text-white text-center focus:outline-none focus:border-yellow-400/50"
+                          >
+                            <option value="">-</option>
+                            <option value="逃">逃</option>
+                            <option value="先">先</option>
+                            <option value="差">差</option>
+                            <option value="追">追</option>
+                          </select>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {Object.values(horseDetailInputs).some((v) => v.lastThreeFurlong || v.runningStyle) && (
+                    <button
+                      onClick={() => setHorseDetailInputs({})}
+                      className="mt-3 text-[10px] text-slate-500 hover:text-red-400 transition-colors"
+                    >
+                      入力クリア
+                    </button>
+                  )}
+                  </>
                 )}
               </div>
             )}

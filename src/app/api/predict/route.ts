@@ -17,6 +17,10 @@ export async function POST(request: NextRequest) {
     const { raceId } = body
     const horseWeights: Record<string, { weight: number | null; weightChange: number | null }> | undefined = body.horseWeights
     const trackCondition: string | undefined = body.trackCondition
+    const trainingData: Record<string, {
+      lastThreeFurlong?: number | null
+      runningStyle?: string | null
+    }> | undefined = body.trainingData
     if (!raceId) return NextResponse.json({ error: 'raceIdが必要です' }, { status: 400 })
 
     const race = await prisma.race.findUnique({
@@ -34,13 +38,16 @@ export async function POST(request: NextRequest) {
     const hasApiKey = !!process.env.ANTHROPIC_API_KEY
     const hasEntries = race.entries.length > 0
 
-    // ユーザー入力の馬体重をエントリにマージ
+    // ユーザー入力（体重・調教・上がり3F・脚質）をエントリにマージ
     const weightedEntries = race.entries.map((e) => {
       const wData = horseWeights?.[e.horseName]
+      const tData = trainingData?.[e.horseName]
       return {
         ...e,
         horseWeight: wData?.weight ?? e.horseWeight ?? null,
         weightChange: wData?.weightChange ?? null,
+        lastThreeFurlong: tData?.lastThreeFurlong ?? null,
+        runningStyle: tData?.runningStyle ?? null,
       }
     })
     const isLocalModeReady = horseStatCount >= LOCAL_MODE_THRESHOLD
@@ -57,7 +64,7 @@ export async function POST(request: NextRequest) {
         prisma.horseStat.findMany({ where: { horseName: { in: horseNames } } }),
         getLocalWeights(),
       ])
-      const raceWithCond = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined }
+      const raceWithCond = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
       const scored = localScoreHorses(weightedEntries, raceWithCond, stats, weights)
       predictions = scored
       const coveredCount = stats.length
@@ -96,7 +103,7 @@ export async function POST(request: NextRequest) {
         const stats = hasEntries
           ? await prisma.horseStat.findMany({ where: { horseName: { in: weightedEntries.map((e) => e.horseName) } } })
           : []
-        const fallbackRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined }
+        const fallbackRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
         const scored = localScoreHorses(
           hasEntries ? weightedEntries : [],
           fallbackRace,
@@ -111,7 +118,7 @@ export async function POST(request: NextRequest) {
       const stats = hasEntries
         ? await prisma.horseStat.findMany({ where: { horseName: { in: weightedEntries.map((e) => e.horseName) } } })
         : []
-      const noKeyRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined }
+      const noKeyRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
       const scored = localScoreHorses(hasEntries ? weightedEntries : [], noKeyRace, stats)
       predictions = scored
       if (horseStatCount < LOCAL_MODE_THRESHOLD) {

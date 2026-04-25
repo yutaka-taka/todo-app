@@ -96,7 +96,7 @@ export async function POST() {
         surface: r.surface,
         distance: r.distance,
         date: r.date,
-        results: r.results.map((res) => ({ horseName: res.horseName, finishPosition: res.finishPosition })),
+        results: r.results.map((res) => ({ horseName: res.horseName, finishPosition: res.finishPosition, popularity: res.popularity ?? null })),
       }))
     )
     const realStatNames = new Set(realStats.map((s) => s.horseName))
@@ -136,8 +136,11 @@ export async function POST() {
                 existing.raceNameData as Record<string, { races: number; places: number }>,
                 hs.raceNameData
               ),
-              lastRaceDate: hs.lastRaceDate,
-              // Prepend new batch positions (newest) before existing older form
+              // 新バッチが既存より新しい場合のみ lastRace 系を上書き
+              ...(hs.lastRaceDate >= (existing.lastRaceDate ?? new Date(0)) ? {
+                lastRaceDate: hs.lastRaceDate,
+                lastRacePopularity: hs.lastRacePopularity ?? null,
+              } : {}),
               recentForm: mergeRecentForm(hs.recentForm, existing.recentForm),
             },
           })
@@ -154,6 +157,7 @@ export async function POST() {
               surfaceData: hs.surfaceData,
               raceNameData: hs.raceNameData,
               lastRaceDate: hs.lastRaceDate,
+              lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
             },
           })

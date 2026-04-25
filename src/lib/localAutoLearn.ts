@@ -23,16 +23,23 @@ type FactorStatsMap = Record<keyof LocalWeights, FactorStat>
 async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
   const empty = (): FactorStat => ({ hits: 0, total: 0 })
   const stats: FactorStatsMap = {
-    recentFormMult:   empty(),
-    distanceMult:     empty(),
-    venueMult:        empty(),
-    surfaceMult:      empty(),
-    g1Mult:           empty(),
-    ageMult:          empty(),
-    jockeyMult:       empty(),
-    raceAffinityMult: empty(),
-    trackCondMult:    empty(),
-    // prepMult は固定ボーナスのため重み調整対象外（factorSamplesに含めない）
+    recentFormMult:       empty(),
+    distanceMult:         empty(),
+    venueMult:            empty(),
+    surfaceMult:          empty(),
+    g1Mult:               empty(),
+    ageMult:              empty(),
+    jockeyMult:           empty(),
+    raceAffinityMult:     empty(),
+    trackCondMult:        empty(),
+    // prepMult は固定ボーナスのため重み調整対象外
+    // v274 新因子
+    gateMult:             empty(),
+    trainerMult:          empty(),
+    lastThreeFurlongMult: empty(),
+    restIntervalMult:     empty(),
+    courseFeatureMult:    empty(),
+    paceMult:             empty(),
   }
 
   const races = await prisma.race.findMany({
@@ -59,15 +66,21 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
       if (!bonuses) continue
 
       const factorMap: [keyof LocalWeights, number][] = [
-        ['recentFormMult',   bonuses.recentForm    ?? 0],
-        ['distanceMult',     bonuses.distance      ?? 0],
-        ['venueMult',        bonuses.venue         ?? 0],
-        ['surfaceMult',      bonuses.surface       ?? 0],
-        ['g1Mult',           bonuses.g1            ?? 0],
-        ['ageMult',          bonuses.age           ?? 0],
-        ['jockeyMult',       bonuses.jockey        ?? 0],
-        ['raceAffinityMult', bonuses.raceAffinity  ?? 0],
-        ['trackCondMult',    bonuses.trackCond     ?? 0],
+        ['recentFormMult',       bonuses.recentForm       ?? 0],
+        ['distanceMult',         bonuses.distance         ?? 0],
+        ['venueMult',            bonuses.venue            ?? 0],
+        ['surfaceMult',          bonuses.surface          ?? 0],
+        ['g1Mult',               bonuses.g1               ?? 0],
+        ['ageMult',              bonuses.age              ?? 0],
+        ['jockeyMult',           bonuses.jockey           ?? 0],
+        ['raceAffinityMult',     bonuses.raceAffinity     ?? 0],
+        ['trackCondMult',        bonuses.trackCond        ?? 0],
+        ['gateMult',             bonuses.gate             ?? 0],
+        ['trainerMult',          bonuses.trainer          ?? 0],
+        ['lastThreeFurlongMult', bonuses.lastThreeFurlong ?? 0],
+        ['restIntervalMult',     bonuses.restInterval     ?? 0],
+        ['courseFeatureMult',    bonuses.courseFeature    ?? 0],
+        ['paceMult',             bonuses.pace             ?? 0],
       ]
 
       for (const [key, val] of factorMap) {

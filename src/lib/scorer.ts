@@ -10,18 +10,32 @@ export interface LocalWeights {
   jockeyMult: number
   raceAffinityMult: number
   trackCondMult: number
+  // v274 追加因子
+  gateMult: number
+  trainerMult: number
+  lastThreeFurlongMult: number
+  restIntervalMult: number
+  courseFeatureMult: number
+  paceMult: number
 }
 
 export const DEFAULT_WEIGHTS: LocalWeights = {
-  recentFormMult: 0.73, // v273最適化: 前哨戦・フォーム改善後の最適値
-  distanceMult: 1.28,   // 距離適性は最強因子
-  venueMult: 1.15,      // コース適性は第2因子
-  surfaceMult: 1.05,
-  g1Mult: 0.80,         // G1実績（近G1未連対のペナルティ緩和後に下げ）
-  ageMult: 0.50,        // 年齢因子を適度に強化
-  jockeyMult: 1.10,     // 騎手効果を若干強化
-  raceAffinityMult: 1.0,
-  trackCondMult: 1.0,
+  recentFormMult:       0.73,
+  distanceMult:         1.28,
+  venueMult:            1.15,
+  surfaceMult:          1.05,
+  g1Mult:               0.80,
+  ageMult:              0.50,
+  jockeyMult:           1.10,
+  raceAffinityMult:     1.0,
+  trackCondMult:        1.0,
+  // 新因子はすべて 1.0 から開始（自己学習で最適化）
+  gateMult:             1.0,
+  trainerMult:          1.0,
+  lastThreeFurlongMult: 1.0,
+  restIntervalMult:     1.0,
+  courseFeatureMult:    1.0,
+  paceMult:             1.0,
 }
 
 interface EntryInput {
@@ -31,6 +45,10 @@ interface EntryInput {
   jockey?: string | null
   horseWeight?: number | null
   weightChange?: number | null
+  frameNumber?: number | null      // 枠番
+  trainer?: string | null           // 調教師
+  lastThreeFurlong?: number | null  // 前走上がり3F（秒）
+  runningStyle?: string | null      // 脚質: 逃/先/差/追
 }
 
 interface RaceContext {
@@ -40,6 +58,7 @@ interface RaceContext {
   venue: string
   surface: string
   trackCondition?: string
+  date?: Date
 }
 
 export interface ScoredHorse {
@@ -64,28 +83,67 @@ export interface ScoredHorse {
       raceAffinity: number
       trackCond: number
       prep: number
+      gate: number
+      trainer: number
+      lastThreeFurlong: number
+      restInterval: number
+      courseFeature: number
+      pace: number
     }
   }
 }
 
 type StatRecord = Record<string, { races: number; places: number }>
 
-// 騎手ランク定義（JRA主要騎手のG1勝利数・連対実績に基づく）
+// ========== 騎手ランク ==========
 const JOCKEY_RANKS: Record<string, number> = {
-  // S+級: 圧倒的な実績（+14）
   'C.ルメール': 14, 'ルメール': 14,
-  // S級: トップ騎手（+10）
   '武豊': 10, '川田将雅': 10, '横山武史': 10,
-  // A+級: 主要騎手（+7）
   '坂井瑠星': 7, '岩田望来': 7, '松山弘平': 7,
   '戸崎圭太': 7, '池添謙一': 7, '北村友一': 7,
   'M.デムーロ': 7, 'デムーロ': 7,
-  // A級: 実力騎手（+4）
   '浜中俊': 4, '田辺裕信': 4, '丸山元気': 4,
   '幸英明': 4, '藤岡佑介': 4, '西村淳也': 4,
   '鮫島克駿': 4, '永野猛蔵': 4, '三浦皇成': 4,
   '福永祐一': 7, '岩田康誠': 4, '蛯名正義': 4,
   '内田博幸': 4, '柴田善臣': 4,
+}
+
+// ========== 調教師ランク ==========
+const TRAINER_RANKS: Record<string, number> = {
+  // S+級 (+10): 年間G1複数制覇
+  '国枝栄': 10, '手塚貴久': 10,
+  // S級 (+8)
+  '矢作芳人': 8, '友道康夫': 8, '木村哲也': 8, '堀宣行': 8, '藤原英昭': 8,
+  '中内田充正': 8,
+  // A+級 (+5)
+  '池江泰寿': 5, '須貝尚介': 5, '高野友和': 5, '斉藤崇史': 5,
+  '大久保龍志': 5, '音無秀孝': 5, '安田隆行': 5, '中竹和也': 5, '吉田直弘': 5,
+  '田中博康': 5, '石橋守': 5, '西村真幸': 5,
+  // A級 (+3)
+  '角居勝彦': 3, '石坂正': 3, '平野雄次': 3, '清水久詞': 3,
+  '辻野泰之': 3, '昆貢': 3, '加藤士津八': 3, '奥村武': 3, '萩原清': 3,
+  '橋口弘次郎': 3, '松田博資': 3,
+}
+
+// ========== 競馬場コース特性 ==========
+interface CourseFeature {
+  slope: 'steep' | 'mild' | 'flat'
+  direction: 'right' | 'left'
+  straightLength: number  // 最終直線距離(m)
+  shape: 'tight' | 'wide'
+}
+const COURSE_FEATURES: Record<string, CourseFeature> = {
+  '東京': { slope: 'mild',  direction: 'left',  straightLength: 525, shape: 'wide'  },
+  '中山': { slope: 'steep', direction: 'right', straightLength: 310, shape: 'tight' },
+  '阪神': { slope: 'steep', direction: 'right', straightLength: 356, shape: 'wide'  },
+  '京都': { slope: 'mild',  direction: 'right', straightLength: 404, shape: 'wide'  },
+  '中京': { slope: 'mild',  direction: 'left',  straightLength: 412, shape: 'wide'  },
+  '新潟': { slope: 'flat',  direction: 'left',  straightLength: 659, shape: 'wide'  },
+  '函館': { slope: 'flat',  direction: 'right', straightLength: 262, shape: 'tight' },
+  '札幌': { slope: 'flat',  direction: 'right', straightLength: 266, shape: 'tight' },
+  '小倉': { slope: 'flat',  direction: 'right', straightLength: 293, shape: 'tight' },
+  '福島': { slope: 'flat',  direction: 'right', straightLength: 292, shape: 'tight' },
 }
 
 const RANK_CAPS = [65, 52, 38, 28, 22, 18, 15]
@@ -115,6 +173,150 @@ const PREP_RACES: Record<string, string[]> = {
   '大阪杯':               ['金鯱賞', '中山記念', '京都記念'],
 }
 
+// ========== ヘルパー関数 ==========
+
+function smoothedRate(places: number, races: number): number {
+  return (places + 2) / (races + 8)
+}
+
+function parseRecentForm(form: string): number[] {
+  return form.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
+}
+
+function getGateBonus(frameNumber: number | null | undefined, distance: number, surface: string): number {
+  if (frameNumber == null || frameNumber <= 0) return 0
+  const fn = frameNumber
+  if (surface === '芝') {
+    if (distance <= 1400) {
+      if (fn <= 2) return 4
+      if (fn <= 4) return 2
+      if (fn >= 8) return -4
+      if (fn >= 7) return -2
+      return 0
+    } else if (distance <= 2000) {
+      if (fn <= 3) return 2
+      if (fn >= 8) return -1
+      return 1
+    } else {
+      if (fn <= 3) return 1
+      return 0
+    }
+  } else {
+    // ダート: 内枠はスタート時に砂を被りやすい
+    if (distance <= 1400) {
+      if (fn <= 2) return -1
+      if (fn >= 4 && fn <= 6) return 3
+      if (fn >= 8) return -2
+      return 1
+    } else {
+      if (fn >= 4 && fn <= 6) return 2
+      if (fn >= 8) return -1
+      return 0
+    }
+  }
+}
+
+function getCourseFeatureBonus(targetVenue: string, venueData: StatRecord): number {
+  const target = COURSE_FEATURES[targetVenue]
+  if (!target) return 0
+  let bonus = 0
+  for (const [venue, data] of Object.entries(venueData)) {
+    if (venue === targetVenue || data.races === 0) continue
+    const feature = COURSE_FEATURES[venue]
+    if (!feature) continue
+    const slopeSim   = feature.slope === target.slope ? 0.5 : 0
+    const dirSim     = feature.direction === target.direction ? 0.3 : 0
+    const shapeSim   = feature.shape === target.shape ? 0.2 : 0
+    const similarity = slopeSim + dirSim + shapeSim
+    if (similarity < 0.3) continue
+    const rate = data.places / data.races
+    const sf   = Math.min(data.races, 5) / 5
+    const raw  = rate >= 0.40 ? 8 * similarity * sf
+               : rate >= 0.25 ? 3 * similarity * sf
+               : rate < 0.10  ? -4 * similarity * sf
+               : 0
+    bonus = Math.max(bonus, raw)
+  }
+  return Math.min(Math.round(bonus), 8)
+}
+
+function getLastThreeFurlongBonus(ltf: number | null | undefined, surface: string): number {
+  if (ltf == null) return 0
+  const base = surface === 'ダート' ? 36.5 : 33.5
+  const diff = ltf - base
+  if (diff <= -1.5) return 12
+  if (diff <= -0.8) return 8
+  if (diff <= -0.3) return 4
+  if (diff <= 0.3)  return 0
+  if (diff <= 0.8)  return -3
+  return -6
+}
+
+function getRestIntervalBonus(
+  stat: HorseStat & { lastRacePopularity?: number | null },
+  raceDate: Date | undefined,
+): number {
+  if (!stat.lastRaceDate || !raceDate) return 0
+  const days = Math.floor((new Date(raceDate).getTime() - new Date(stat.lastRaceDate).getTime()) / 86400000)
+  if (days <= 0) return 0
+
+  // 前走着順を recentForm から取得
+  let lastRacePosition: number | null = null
+  if (stat.recentForm) {
+    const pos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
+    lastRacePosition = pos[0] ?? null
+  }
+
+  // 前走: 人気(1-3位)だったが着外(5着以下) = 叩き（ローテ踏み台）候補
+  const wasLikelyPrep = (stat.lastRacePopularity != null && stat.lastRacePopularity <= 3) &&
+                         (lastRacePosition != null && lastRacePosition >= 5)
+
+  // 叩き良化型: recentFormで「着順改善」パターンが2回以上（後ろから前に来るパターン）
+  let takiCount = 0
+  if (stat.recentForm) {
+    const pos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
+    for (let i = 0; i < Math.min(pos.length - 1, 4); i++) {
+      if (pos[i] < pos[i + 1]) takiCount++
+    }
+  }
+  const isTakiType = takiCount >= 2
+
+  if (days <= 13) {
+    return wasLikelyPrep && isTakiType ? -1 : -8
+  } else if (days <= 20) {
+    if (wasLikelyPrep) return isTakiType ? 3 : 0
+    return -3
+  } else if (days <= 35) {
+    if (wasLikelyPrep) return isTakiType ? 5 : 2
+    return 0
+  } else if (days <= 56) {
+    return -1
+  } else if (days <= 84) {
+    return -3
+  } else if (days <= 150) {
+    return -5
+  }
+  return -8
+}
+
+function getPaceBonus(runningStyle: string | null | undefined, paceType: 'high' | 'medium' | 'slow'): number {
+  if (!runningStyle || paceType === 'medium') return 0
+  if (paceType === 'high') {
+    if (runningStyle === '逃') return -10
+    if (runningStyle === '先') return -5
+    if (runningStyle === '差') return 5
+    if (runningStyle === '追') return 8
+  } else {
+    if (runningStyle === '逃') return 8
+    if (runningStyle === '先') return 6
+    if (runningStyle === '差') return -3
+    if (runningStyle === '追') return -6
+  }
+  return 0
+}
+
+// ========== メインスコアリング ==========
+
 export function localScoreHorses(
   entries: EntryInput[],
   race: RaceContext,
@@ -123,9 +325,23 @@ export function localScoreHorses(
 ): ScoredHorse[] {
   const statMap = new Map(stats.map((s) => [s.horseName, s]))
 
+  // 展開予測: 脚質分布からペース推定
+  let frontCount = 0, styleTotal = 0
+  for (const e of entries) {
+    if (!e.runningStyle) continue
+    styleTotal++
+    if (e.runningStyle === '逃' || e.runningStyle === '先') frontCount++
+  }
+  let paceType: 'high' | 'medium' | 'slow' = 'medium'
+  if (styleTotal >= 4) {
+    const ratio = frontCount / styleTotal
+    if (ratio >= 0.5) paceType = 'high'
+    else if (ratio <= 0.2) paceType = 'slow'
+  }
+
   const scored = entries.map((entry) => {
     const stat = statMap.get(entry.horseName) ?? null
-    return buildScore(entry, race, stat, weights)
+    return buildScore(entry, race, stat, weights, paceType)
   })
 
   scored.sort((a, b) => b.placeRate - a.placeRate)
@@ -154,19 +370,12 @@ export function localScoreHorses(
   }))
 }
 
-function smoothedRate(places: number, races: number): number {
-  return (places + 2) / (races + 8)
-}
-
-function parseRecentForm(form: string): number[] {
-  return form.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
-}
-
 function buildScore(
   entry: EntryInput,
   race: RaceContext,
-  stat: HorseStat | null,
-  weights: LocalWeights
+  stat: (HorseStat & { lastRacePopularity?: number | null }) | null,
+  weights: LocalWeights,
+  paceType: 'high' | 'medium' | 'slow' = 'medium'
 ): ScoredHorse {
   if (!stat || stat.totalRaces === 0) {
     let partialBonus = 0
@@ -204,10 +413,11 @@ function buildScore(
   let effectiveBase = baseSmoothed * 100
   if (race.grade === 'G1' && stat.g1Races >= 1) {
     const g1Smoothed = smoothedRate(stat.g1Places, stat.g1Races)
-    const g1Weight = Math.min(stat.g1Races, 10) / 10 * 0.6  // max 0.6、1レースから適用
+    const g1Weight = Math.min(stat.g1Races, 10) / 10 * 0.6
     effectiveBase = baseSmoothed * (1 - g1Weight) * 100 + g1Smoothed * g1Weight * 100
   }
 
+  // --- 近走フォーム ---
   let recentFormBonus = 0
   let recentFormText = `通算${stat.totalRaces}戦${stat.totalPlaces}連対`
 
@@ -223,21 +433,25 @@ function buildScore(
         wTotal += w
       }
       const avgPos = wSum / wTotal
-
       if (avgPos <= 1.4)      recentFormBonus = 24
       else if (avgPos <= 1.8) recentFormBonus = 20
       else if (avgPos <= 2.2) recentFormBonus = 15
       else if (avgPos <= 3.0) recentFormBonus = 8
       else if (avgPos <= 4.5) recentFormBonus = 1
-      else if (avgPos <= 5.5) recentFormBonus = 0   // 5着前後は中立（ペナルティなし）
+      else if (avgPos <= 5.5) recentFormBonus = 0
       else if (avgPos > 7.0)  recentFormBonus = -10
       else                    recentFormBonus = -4
 
       if (positions.length >= 2 && positions[0] <= 2 && positions[1] <= 2) recentFormBonus += 5
-      if (positions[0] === 1) recentFormBonus += 3  // 直近1着追加ボーナス
+      if (positions[0] === 1) recentFormBonus += 3
+      // 3連勝以上: 圧倒的フォームへの追加ボーナス
+      if (positions.length >= 3 && positions[0] === 1 && positions[1] === 1 && positions[2] === 1) recentFormBonus += 5
+      // 巻き返し候補: 前走大失敗 + 前々走以前は連続好走（ゲートトラブル等の一発失敗後）
+      if (positions.length >= 3 && positions[0] >= 8 && positions[1] <= 2 && positions[2] <= 2) recentFormBonus += 6
     }
   }
 
+  // --- 距離適性 ---
   let distanceBonus = 0
   const dk = String(race.distance)
   const dStat = distData[dk]
@@ -278,6 +492,7 @@ function buildScore(
     }
   }
 
+  // --- コース実績 ---
   let venueBonus = 0
   const vStat = venueData[race.venue]
   let courseRecord = `${race.venue}実績なし`
@@ -298,6 +513,7 @@ function buildScore(
     }
   }
 
+  // --- 馬場 ---
   let surfaceBonus = 0
   const sStat = surfData[race.surface]
   if (sStat && sStat.races > 0) {
@@ -308,14 +524,21 @@ function buildScore(
     else if (r < 0.2)  surfaceBonus = -Math.round(8 * sf)
   }
 
+  // --- G1実績 ---
   let g1Bonus = 0
   let g1Note = ''
   if (race.grade === 'G1') {
     if (stat.g1Races === 0) {
-      // 全体連対率が高ければ初G1でもペナルティ軽減
       const overallRate = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
-      g1Bonus = overallRate >= 0.45 ? -3 : overallRate >= 0.30 ? -5 : -8
-      g1Note = overallRate >= 0.30 ? `G1初挑戦(連対率${Math.round(overallRate*100)}%)` : 'G1初挑戦'
+      const is3yoDebut = entry.age === 3 && stat.totalRaces >= 2
+      if (is3yoDebut) {
+        // 3歳G1初挑戦: 良績なら初挑戦ペナルティを軽減（無敗の新鋭を正当評価）
+        g1Bonus = overallRate >= 0.70 ? 3 : overallRate >= 0.50 ? 0 : overallRate >= 0.30 ? -3 : -6
+        g1Note = `3歳G1初挑戦(連対率${Math.round(overallRate*100)}%)`
+      } else {
+        g1Bonus = overallRate >= 0.45 ? -3 : overallRate >= 0.30 ? -5 : -8
+        g1Note = overallRate >= 0.30 ? `G1初挑戦(連対率${Math.round(overallRate*100)}%)` : 'G1初挑戦'
+      }
     } else {
       const g1Rate = stat.g1Places / stat.g1Races
       if (g1Rate >= 0.4) {
@@ -328,11 +551,9 @@ function buildScore(
         g1Bonus = -8
         g1Note = `G1で${stat.g1Races}戦連対なし(苦手)`
       } else {
-        g1Bonus = -1  // 1-2回のG1経験で未連対: 経験値あり、軽微なペナルティのみ
+        g1Bonus = -1
         g1Note = `G1で${stat.g1Races}戦連対なし`
       }
-
-      // Same-distance or same-venue G1 credit
       let sameDistCredit = 0
       for (const [dk2, dv2] of Object.entries(distData)) {
         const d2 = parseInt(dk2, 10)
@@ -350,6 +571,7 @@ function buildScore(
     }
   }
 
+  // --- 年齢 ---
   let ageBonus = 0
   let ageNote = ''
   if (entry.age != null) {
@@ -358,6 +580,7 @@ function buildScore(
     else if (entry.age >= 7)                     { ageBonus = -4; ageNote = `${entry.age}歳(晩年期)` }
   }
 
+  // --- 馬体重 ---
   let weightNote = ''
   let weightBonus = 0
   if (entry.weightChange != null) {
@@ -369,7 +592,7 @@ function buildScore(
     else                          { weightBonus = -2; weightNote = `体重小変動(${sign}${wc}kg)` }
   }
 
-  // 騎手評価
+  // --- 騎手 ---
   let jockeyBonus = 0
   let jockeyNote = ''
   if (entry.jockey) {
@@ -382,7 +605,7 @@ function buildScore(
     else jockeyNote = entry.jockey
   }
 
-  // 少数レース高ポテンシャル補正（出走数≤6でG1連対 → 有望馬）
+  // --- ポテンシャル補正 ---
   let potentialBonus = 0
   if (stat.totalRaces <= 6 && stat.g1Places > 0) {
     const g1Rate = stat.g1Places / stat.g1Races
@@ -391,32 +614,32 @@ function buildScore(
     potentialBonus = 5
   }
 
-  // 直近フォームのトレンド補正（改善中ならボーナス）
+  // --- フォームトレンド ---
   let trendBonus = 0
   if (stat.recentForm) {
     const tPos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
     if (tPos.length >= 4) {
       const recentAvg = (tPos[0] + tPos[1]) / 2
-      const olderAvg = (tPos[2] + tPos[3]) / 2
+      const olderAvg  = (tPos[2] + tPos[3]) / 2
       if (recentAvg < olderAvg - 1.5) trendBonus = 6
       else if (recentAvg < olderAvg - 0.5) trendBonus = 3
       else if (recentAvg > olderAvg + 2) trendBonus = -5
     }
   }
 
-  // 同一レース相性ボーナス（宝塚記念を複数回制覇した馬など）
+  // --- 同レース相性 ---
   let raceAffinityBonus = 0
   if (race.name && stat.raceNameData) {
     const raceKey = race.name.replace(/\s*\d{4}年?\s*$/, '').trim()
     const rnData = (stat.raceNameData as StatRecord)[raceKey]
     if (rnData && rnData.races > 0) {
-        if (rnData.places >= 2)       raceAffinityBonus = 18  // 2回以上連対: 強力な適性
-      else if (rnData.places >= 1)  raceAffinityBonus = 6   // 1回連対: 小ボーナス
-      else if (rnData.races >= 3)   raceAffinityBonus = -4  // 3回以上出走・未連対: 弱ペナルティ
+      if (rnData.places >= 2)      raceAffinityBonus = 18
+      else if (rnData.places >= 1) raceAffinityBonus = 6
+      else if (rnData.races >= 3)  raceAffinityBonus = -4
     }
   }
 
-  // 前哨戦実績ボーナス
+  // --- 前哨戦 ---
   let prepBonus = 0
   if (race.name && stat.raceNameData) {
     const currentRaceBase = race.name.replace(/\s*\d{4}年?\s*$/, '').trim()
@@ -430,18 +653,16 @@ function buildScore(
     }
   }
 
-  // 馬場状態補正（芝の重/不良でペナルティ、ダートなら恩恵）
+  // --- 馬場状態 ---
   let trackCondBonus = 0
   if (race.trackCondition && race.trackCondition !== '良') {
     if (race.surface === '芝') {
       if (race.trackCondition === '不良') {
-        const overallRate = stat ? stat.totalPlaces / stat.totalRaces : 0
+        const overallRate = stat.totalPlaces / stat.totalRaces
         trackCondBonus = overallRate >= 0.40 ? 3 : overallRate >= 0.25 ? 0 : -5
       } else if (race.trackCondition === '重') {
-        const overallRate = stat ? stat.totalPlaces / stat.totalRaces : 0
+        const overallRate = stat.totalPlaces / stat.totalRaces
         trackCondBonus = overallRate >= 0.40 ? 2 : overallRate >= 0.20 ? 0 : -3
-      } else if (race.trackCondition === '稍重') {
-        trackCondBonus = 0  // 稍重はほぼ変わらず
       }
     } else if (race.surface === 'ダート') {
       if (race.trackCondition === '重' || race.trackCondition === '不良') trackCondBonus = 3
@@ -449,29 +670,63 @@ function buildScore(
     }
   }
 
-  // Apply weight multipliers to each factor
-  const wRecentForm    = Math.round(recentFormBonus   * weights.recentFormMult)
-  const wDistance      = Math.round(distanceBonus     * weights.distanceMult)
-  const wVenue         = Math.round(venueBonus         * weights.venueMult)
-  const wSurface       = Math.round(surfaceBonus       * weights.surfaceMult)
-  const wG1            = Math.round(g1Bonus            * weights.g1Mult)
-  const wAge           = Math.round(ageBonus           * weights.ageMult)
-  const wJockey        = Math.round(jockeyBonus        * (weights.jockeyMult ?? 1.0))
-  const wRaceAffinity  = Math.round(raceAffinityBonus  * (weights.raceAffinityMult ?? 1.0))
-  const wTrackCond     = Math.round(trackCondBonus     * (weights.trackCondMult ?? 1.0))
+  // ========== v274 新因子 ==========
 
-  const totalBonus = wRecentForm + wDistance + wVenue + wSurface + wG1 + wAge + wJockey + wRaceAffinity + wTrackCond + prepBonus + weightBonus + potentialBonus + trendBonus
+  // ⑨ 枠番
+  const gateBonus = getGateBonus(entry.frameNumber, race.distance, race.surface)
 
-  // Cap effective base at 60% before bonuses (72上限はソート後にランクキャップで適用)
+  // ⑦ 調教師
+  let trainerBonus = 0
+  let trainerNote = ''
+  if (entry.trainer) {
+    trainerBonus = TRAINER_RANKS[entry.trainer] ?? 0
+    if (trainerBonus >= 8) trainerNote = `${entry.trainer}厩舎(S級調教師)`
+    else if (trainerBonus >= 5) trainerNote = `${entry.trainer}厩舎(A+級調教師)`
+    else if (trainerBonus >= 3) trainerNote = `${entry.trainer}厩舎(A級調教師)`
+  }
+
+  // ⑧ 上がり3F（前走末脚）
+  const ltfBonus = getLastThreeFurlongBonus(entry.lastThreeFurlong, race.surface)
+
+  // ③ 競馬場コース特性（類似コース経験から補正）
+  const courseFeatureBonus = getCourseFeatureBonus(race.venue, venueData)
+
+  // ⑪ 出走間隔（叩き良化パターン考慮）
+  const restIntervalBonus = getRestIntervalBonus(stat, race.date)
+
+  // ⑤ 展開（脚質×予想ペース）
+  const paceBonus = getPaceBonus(entry.runningStyle, paceType)
+
+  // ========== 重み乗算 ==========
+  const wRecentForm    = Math.round(recentFormBonus      * weights.recentFormMult)
+  const wDistance      = Math.round(distanceBonus        * weights.distanceMult)
+  const wVenue         = Math.round(venueBonus           * weights.venueMult)
+  const wSurface       = Math.round(surfaceBonus         * weights.surfaceMult)
+  const wG1            = Math.round(g1Bonus              * weights.g1Mult)
+  const wAge           = Math.round(ageBonus             * weights.ageMult)
+  const wJockey        = Math.round(jockeyBonus          * weights.jockeyMult)
+  const wRaceAffinity  = Math.round(raceAffinityBonus    * weights.raceAffinityMult)
+  const wTrackCond     = Math.round(trackCondBonus       * weights.trackCondMult)
+  const wGate          = Math.round(gateBonus            * weights.gateMult)
+  const wTrainer       = Math.round(trainerBonus         * weights.trainerMult)
+  const wLtf           = Math.round(ltfBonus             * weights.lastThreeFurlongMult)
+  const wRest          = Math.round(restIntervalBonus    * weights.restIntervalMult)
+  const wCourseFeature = Math.round(courseFeatureBonus   * weights.courseFeatureMult)
+  const wPace          = Math.round(paceBonus            * weights.paceMult)
+
+  const totalBonus = wRecentForm + wDistance + wVenue + wSurface + wG1 + wAge
+    + wJockey + wRaceAffinity + wTrackCond + prepBonus + weightBonus
+    + potentialBonus + trendBonus
+    + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace
+
   const cappedBase = Math.min(effectiveBase, 60)
-  const finalRate = Math.max(20, cappedBase + totalBonus)
+  const finalRate  = Math.max(20, cappedBase + totalBonus)
 
   const reason = [
     `ベース連対率${(baseSmoothed * 100).toFixed(0)}%(${stat.totalRaces}戦)`,
-    g1Note,
-    ageNote,
-    jockeyNote,
-    weightNote,
+    g1Note, ageNote, jockeyNote, trainerNote, weightNote,
+    entry.lastThreeFurlong ? `上がり3F:${entry.lastThreeFurlong}秒` : '',
+    entry.runningStyle && paceType !== 'medium' ? `${entry.runningStyle}/${paceType === 'high' ? 'ハイペース' : 'スロー'}展開` : '',
   ].filter(Boolean).join('、')
 
   return {
@@ -487,21 +742,27 @@ function buildScore(
       reason,
       _bonuses: {
         recentForm: wRecentForm,
-        distance: wDistance,
-        venue: wVenue,
-        surface: wSurface,
-        g1: wG1,
-        age: wAge,
-        jockey: wJockey,
+        distance:   wDistance,
+        venue:      wVenue,
+        surface:    wSurface,
+        g1:         wG1,
+        age:        wAge,
+        jockey:     wJockey,
         raceAffinity: wRaceAffinity,
-        trackCond: wTrackCond,
-        prep: prepBonus,
+        trackCond:  wTrackCond,
+        prep:       prepBonus,
+        gate:         wGate,
+        trainer:      wTrainer,
+        lastThreeFurlong: wLtf,
+        restInterval: wRest,
+        courseFeature: wCourseFeature,
+        pace:         wPace,
       },
     },
   }
 }
 
-// predict/route.tsのためのエントリー補完ユーティリティ
+// predict/route.ts のためのエントリー補完ユーティリティ
 export function mergeEntriesWithResults(
   entries: { horseNumber: number; horseName: string; age?: number | null; jockey?: string | null }[],
   results: { horseNumber: number; horseName: string }[]

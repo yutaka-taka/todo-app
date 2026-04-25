@@ -54,6 +54,7 @@ export async function POST(request: Request) {
         results: r.results.map((res) => ({
           horseName: res.horseName,
           finishPosition: res.finishPosition,
+          popularity: res.popularity ?? null,
         })),
       }))
     )
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
               surfaceData: hs.surfaceData,
               raceNameData: hs.raceNameData,
               lastRaceDate: hs.lastRaceDate,
+              lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
             },
           })

@@ -5,7 +5,7 @@ export type RaceForStats = {
   surface: string
   distance: number
   date: Date
-  results: Array<{ horseName: string; finishPosition: number }>
+  results: Array<{ horseName: string; finishPosition: number; popularity?: number | null }>
 }
 
 export type HorseStatData = {
@@ -19,6 +19,7 @@ export type HorseStatData = {
   surfaceData: Record<string, { races: number; places: number }>
   raceNameData: Record<string, { races: number; places: number }>
   lastRaceDate: Date
+  lastRacePopularity?: number | null
   recentForm?: string // "1-2-1-3-2" newest first
 }
 
@@ -29,8 +30,8 @@ function normalizeRaceName(name: string): string {
 
 export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData[] {
   const statsMap = new Map<string, HorseStatData>()
-  // Track finish positions with dates per horse for recentForm computation
-  const finishesMap = new Map<string, { date: Date; position: number }[]>()
+  // Track finish positions (with date/popularity) for recentForm and lastRacePopularity
+  const finishesMap = new Map<string, { date: Date; position: number; popularity?: number | null }[]>()
 
   for (const race of races) {
     if (race.results.length === 0) continue
@@ -76,16 +77,17 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
       if (!finishesMap.has(result.horseName)) {
         finishesMap.set(result.horseName, [])
       }
-      finishesMap.get(result.horseName)!.push({ date: race.date, position: result.finishPosition })
+      finishesMap.get(result.horseName)!.push({ date: race.date, position: result.finishPosition, popularity: result.popularity ?? null })
     }
   }
 
-  // Compute recentForm per horse: sort by date desc, take last 5 positions
+  // Compute recentForm and lastRacePopularity per horse (sort by date desc)
   finishesMap.forEach((finishes, horseName) => {
     const stat = statsMap.get(horseName)
     if (stat && finishes.length > 0) {
       finishes.sort((a, b) => b.date.getTime() - a.date.getTime())
       stat.recentForm = finishes.slice(0, 5).map((f) => f.position).join('-')
+      stat.lastRacePopularity = finishes[0].popularity ?? null
     }
   })
 
