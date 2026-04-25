@@ -107,6 +107,11 @@ const JOCKEY_RANKS: Record<string, number> = {
   '鮫島克駿': 4, '永野猛蔵': 4, '三浦皇成': 4,
   '福永祐一': 7, '岩田康誠': 4, '蛯名正義': 4,
   '内田博幸': 4, '柴田善臣': 4,
+  // 近年活躍騎手追加
+  '菅原明良': 7, '横山典弘': 4, '津村明秀': 4,
+  '石川裕紀人': 3, '吉田隼人': 4, '藤岡康太': 4,
+  '富田暁': 3, '団野大成': 3, '角田大和': 3,
+  '岸宏樹': 2, '斎藤新': 3, '武藤雅': 3,
 }
 
 // ========== 調教師ランク ==========
@@ -147,6 +152,19 @@ const COURSE_FEATURES: Record<string, CourseFeature> = {
 }
 
 const RANK_CAPS = [65, 52, 38, 28, 22, 18, 15]
+
+// 前方一致でも騎手ランクを返す（netkeiba の短縮名に対応）
+function getJockeyRank(jockey: string | null | undefined): number {
+  if (!jockey) return 0
+  const exact = JOCKEY_RANKS[jockey]
+  if (exact !== undefined) return exact
+  // 保存名が短縮形の場合: 「津村」→「津村明秀」など前方一致でマッチ
+  for (const [name, rank] of Object.entries(JOCKEY_RANKS)) {
+    if (name.startsWith(jockey) && jockey.length >= 2) return rank
+    if (jockey.startsWith(name) && name.length >= 2) return rank
+  }
+  return 0
+}
 
 const PREP_RACES: Record<string, string[]> = {
   '日本ダービー':           ['皐月賞', 'NHKマイルカップ', '青葉賞'],
@@ -389,16 +407,37 @@ function buildScore(
       if (Math.abs(entry.weightChange) <= 3)  partialBonus += 2
       else if (Math.abs(entry.weightChange) > 10) partialBonus -= 5
     }
+    // 騎手ランク（データなし時でも有力騎手を評価）
+    let jockeyNote = entry.jockey ?? '未定'
+    if (entry.jockey) {
+      const jRank = getJockeyRank(entry.jockey)
+      partialBonus += Math.round(jRank * 0.7)
+      if (jRank >= 14)      { jockeyNote = `${entry.jockey}(最上位騎手)`; notes.push(jockeyNote) }
+      else if (jRank >= 10) { jockeyNote = `${entry.jockey}(S級騎手)`;   notes.push(jockeyNote) }
+      else if (jRank >= 7)  { jockeyNote = `${entry.jockey}(A+級騎手)`;  notes.push(jockeyNote) }
+    }
+    // 調教師ランク（データなし時でも有力厩舎を評価）
+    if (entry.trainer) {
+      const tRank = TRAINER_RANKS[entry.trainer] ?? 0
+      partialBonus += Math.round(tRank * 0.4)
+      if (tRank >= 5) notes.push(`${entry.trainer}厩舎`)
+    }
+    // 枠番ボーナス（軽く反映）
+    const gBonusRaw = getGateBonus(entry.frameNumber, race.distance, race.surface)
+    partialBonus += Math.round(gBonusRaw * 0.4)
+    // 前走上がり3F（データなし時も反映）
+    const ltfBonusRaw = getLastThreeFurlongBonus(entry.lastThreeFurlong, race.surface)
+    partialBonus += Math.round(ltfBonusRaw * 0.5)
     return {
       rank: 0,
       horseNumber: entry.horseNumber,
       horseName: entry.horseName,
-      placeRate: Math.max(22, Math.min(38, 30 + partialBonus)),
+      placeRate: Math.max(20, Math.min(45, 26 + partialBonus)),
       factors: {
         recentForm: 'データなし',
         distanceSuitability: '距離実績未収集',
         courseRecord: 'コース実績未収集',
-        jockeyStats: entry.jockey ?? '未定',
+        jockeyStats: jockeyNote,
         reason: `DBに成績データなし${notes.length ? `（${notes.join('/')}）` : ''}。自己学習を続けると精度が向上します。`,
       },
     }
@@ -596,7 +635,7 @@ function buildScore(
   let jockeyBonus = 0
   let jockeyNote = ''
   if (entry.jockey) {
-    const jRank = JOCKEY_RANKS[entry.jockey] ?? 0
+    const jRank = getJockeyRank(entry.jockey)
     jockeyBonus = jRank
     if (jRank >= 14) jockeyNote = `${entry.jockey}(最上位騎手)`
     else if (jRank >= 10) jockeyNote = `${entry.jockey}(S級騎手)`

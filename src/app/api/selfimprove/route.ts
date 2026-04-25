@@ -380,6 +380,7 @@ ${raceList}
       horseName: e.horseName,
       age: e.age ?? null,
       jockey: e.jockey ?? null,
+      trainer: (e as { trainer?: string | null }).trainer ?? null,
       horseWeight: e.horseWeight ?? null,
       weightChange: null as number | null,
     }))

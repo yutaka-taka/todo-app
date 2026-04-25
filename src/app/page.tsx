@@ -78,6 +78,7 @@ interface VerifyResult {
   verifiedHorses?: string[]
   totalEntries?: number
   message: string
+  races?: Array<{ raceName: string; raceDate: string; verified: number; message: string }>
 }
 
 interface ReanalyzeResult {
@@ -238,6 +239,15 @@ export default function Home() {
     dbSize: string; totalDeadTuples: number; lastVacuum: string;
     tables: { name: string; size: string; liveTuples: number; deadTuples: number }[]
   } | null>(null)
+
+  // 日程取得・手動登録
+  const [fetchingSchedule, setFetchingSchedule] = useState(false)
+  const [scheduleResult, setScheduleResult] = useState<{ message: string; added: number; updated: number; races: Array<{ name: string; date: string; grade: string; venue: string }> } | null>(null)
+  const [scheduleError, setScheduleError] = useState<string | null>(null)
+  const [showManualRaceModal, setShowManualRaceModal] = useState(false)
+  const [manualRaceForm, setManualRaceForm] = useState({ name: '', date: '', venue: '東京', grade: 'G1', surface: '芝', distance: '2000' })
+  const [addingRace, setAddingRace] = useState(false)
+  const [addRaceError, setAddRaceError] = useState<string | null>(null)
 
   // 馬データ管理
   const [showHorsesPanel, setShowHorsesPanel] = useState(false)
@@ -660,6 +670,7 @@ export default function Home() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       setVerifyResult(data)
+      await fetchRaces()
     } catch (e) {
       setVerifyError(e instanceof Error ? e.message : '再検証に失敗しました')
     } finally {
@@ -667,11 +678,61 @@ export default function Home() {
     }
   }
 
-  const targetDateFormatted = targetDate
-    ? format(new Date(targetDate), 'M月d日(E)', { locale: ja })
+  const handleFetchSchedule = async () => {
+    setFetchingSchedule(true)
+    setScheduleResult(null)
+    setScheduleError(null)
+    try {
+      const res = await fetch('/api/fetch-schedule', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setScheduleError(data.error ?? 'netkeiba.com 等からレース日程を取得できませんでした')
+        setShowManualRaceModal(true)
+        return
+      }
+      setScheduleResult(data)
+      await fetchRaces()
+    } catch {
+      setScheduleError('netkeiba.com 等からレース日程を取得できませんでした')
+      setShowManualRaceModal(true)
+    } finally {
+      setFetchingSchedule(false)
+    }
+  }
+
+  const handleAddManualRace = async () => {
+    setAddingRace(true)
+    setAddRaceError(null)
+    try {
+      const res = await fetch('/api/races', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...manualRaceForm, distance: Number(manualRaceForm.distance) }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setShowManualRaceModal(false)
+      setScheduleError(null)
+      setManualRaceForm({ name: '', date: '', venue: '東京', grade: 'G1', surface: '芝', distance: '2000' })
+      await fetchRaces()
+    } catch (e) {
+      setAddRaceError(e instanceof Error ? e.message : '登録に失敗しました')
+    } finally {
+      setAddingRace(false)
+    }
+  }
+
+  const targetDateObj = targetDate ? new Date(targetDate) : null
+  // 土曜日の場合は「5/2(土)〜5/3(日)」と表示
+  const targetDateFormatted = targetDateObj
+    ? targetDateObj.getDay() === 6
+      ? `${format(targetDateObj, 'M月d日(E)', { locale: ja })}〜${format(new Date(targetDateObj.getTime() + 86400000), 'd日(E)', { locale: ja })}`
+      : format(targetDateObj, 'M月d日(E)', { locale: ja })
     : ''
   const today = new Date()
-  const isTodaySunday = isSunday(today)
+  const targetIsToday = targetDateObj
+    ? targetDateObj.toDateString() === today.toDateString()
+    : false
 
   return (
     <div className="min-h-dvh bg-[#080c18] pb-24">
@@ -680,7 +741,7 @@ export default function Home() {
         <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between gap-2">
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold tracking-tight">
-              <span className="gold-shimmer">🏇 競馬G1予想</span>
+              <span className="gold-shimmer">🏇 競馬G1/G2予想</span>
             </h1>
             <p className="text-[10px] text-slate-500">Claude AI 連対率予測</p>
           </div>
@@ -1060,26 +1121,23 @@ export default function Home() {
             )}
 
             {verifyResult && (
-              <div className="mt-2 fade-in">
-                {verifyResult.verified === 0 ? (
-                  <p className="text-xs text-slate-400 text-center">{verifyResult.message}</p>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-blue-400 text-sm">✓</span>
-                      <p className="text-xs text-blue-400 font-medium">
-                        {verifyResult.raceName}（{verifyResult.raceDate}） {verifyResult.verified}頭を最新化
-                      </p>
-                    </div>
-                    {verifyResult.verifiedHorses && verifyResult.verifiedHorses.length > 0 && (
-                      <div className="bg-[#080c18] rounded-xl p-3">
-                        <p className="text-[10px] text-slate-500 mb-1">再検証済み出走馬</p>
-                        <p className="text-[11px] text-slate-300 leading-relaxed">
-                          {verifyResult.verifiedHorses.join('、')}
-                        </p>
+              <div className="mt-2 fade-in space-y-1">
+                <p className={`text-xs text-center ${verifyResult.verified > 0 ? 'text-blue-400' : 'text-slate-400'}`}>
+                  {verifyResult.message}
+                </p>
+                {verifyResult.races && verifyResult.races.length > 0 && (
+                  <div className="bg-[#080c18] rounded-xl p-3 space-y-1">
+                    {verifyResult.races.map((r, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs">
+                        <span className={r.verified > 0 ? 'text-blue-400' : 'text-slate-500'}>
+                          {r.verified > 0 ? '✓' : '✗'}
+                        </span>
+                        <span className={r.verified > 0 ? 'text-blue-300' : 'text-slate-500'}>
+                          {r.raceName.replace(/\d{4}$/, '')}（{r.raceDate}）{r.verified > 0 ? `${r.verified}頭` : r.message}
+                        </span>
                       </div>
-                    )}
-                  </>
+                    ))}
+                  </div>
                 )}
               </div>
             )}
@@ -1473,14 +1531,56 @@ export default function Home() {
         )}
 
         {/* 日付ヘッダー */}
-        <div className="mb-4">
-          <p className="text-xs text-slate-500 mb-0.5">
-            {isTodaySunday ? '本日' : '次の日曜日'}のG1レース
-          </p>
-          <h2 className="text-xl font-bold text-white">
-            {targetDateFormatted || '読み込み中...'}
-          </h2>
+        <div className="mb-3 flex items-end justify-between">
+          <div>
+            <p className="text-xs text-slate-500 mb-0.5">
+              {targetIsToday ? '本日' : '次の'}G1/G2レース
+            </p>
+            <h2 className="text-xl font-bold text-white">
+              {targetDateFormatted || '読み込み中...'}
+            </h2>
+          </div>
+          <div className="flex items-center gap-2 pb-0.5">
+            <button
+              onClick={() => { setAddRaceError(null); setShowManualRaceModal(true) }}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[10px] font-medium border border-[#1e2d4a] text-slate-500 hover:border-slate-400/50 hover:text-slate-300 transition-all"
+              title="レースを手動登録"
+            >
+              ✏️
+            </button>
+            <button
+              onClick={handleFetchSchedule}
+              disabled={fetchingSchedule || loadingRaces}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-blue-400/50 hover:text-blue-400 transition-all disabled:opacity-50"
+            >
+              {fetchingSchedule
+                ? <><Spinner size={3} /><span>取得中...</span></>
+                : <><span>📅</span><span>日程取得</span></>}
+            </button>
+          </div>
         </div>
+
+        {/* 日程取得結果 */}
+        {scheduleResult && (
+          <div className="mb-3 fade-in p-3 bg-emerald-900/20 border border-emerald-700/30 rounded-xl">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-emerald-400 font-medium">✓ {scheduleResult.message}</p>
+              <button onClick={() => setScheduleResult(null)} className="text-slate-600 hover:text-slate-400 text-xs">✕</button>
+            </div>
+            {scheduleResult.races.length > 0 && (
+              <div className="mt-1.5 space-y-0.5">
+                {scheduleResult.races.slice(0, 5).map((r) => (
+                  <p key={r.name} className="text-[10px] text-emerald-300">
+                    {r.name}（{r.date} {r.venue}）
+                  </p>
+                ))}
+                {scheduleResult.races.length > 5 && (
+                  <p className="text-[10px] text-slate-500">他 {scheduleResult.races.length - 5}件</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* レース一覧 */}
         {loadingRaces ? (
@@ -1495,8 +1595,22 @@ export default function Home() {
         ) : races.length === 0 ? (
           <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-6 text-center">
             <p className="text-4xl mb-3">🔍</p>
-            <p className="text-slate-400 text-sm">この日曜日のG1レースは登録されていません。</p>
-            <p className="text-slate-500 text-xs mt-2">DBシードを実行するか、管理者にお問い合わせください。</p>
+            <p className="text-slate-400 text-sm">この週のG1/G2レースは登録されていません。</p>
+            <div className="mt-3 space-y-2">
+              <button
+                onClick={handleFetchSchedule}
+                disabled={fetchingSchedule}
+                className="w-full py-2 rounded-xl text-xs font-medium bg-blue-600/20 border border-blue-600/50 text-blue-400 hover:bg-blue-600/30 transition-all disabled:opacity-50"
+              >
+                {fetchingSchedule ? '取得中...' : '📅 ネットから日程を取得'}
+              </button>
+              <button
+                onClick={() => { setAddRaceError(null); setShowManualRaceModal(true) }}
+                className="w-full py-2 rounded-xl text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-[#2e4a6a] transition-all"
+              >
+                ✏️ レースを手動で登録
+              </button>
+            </div>
           </div>
         ) : (
           <div className="space-y-2 mb-4">
@@ -1513,7 +1627,9 @@ export default function Home() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="px-2 py-0.5 bg-yellow-400 text-black text-[10px] font-black rounded-full">
+                      <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
+                        race.grade === 'G1' ? 'bg-yellow-400 text-black' : 'bg-slate-300 text-black'
+                      }`}>
                         {race.grade}
                       </span>
                       <span className="text-[11px] text-slate-500">{race.venue}</span>
@@ -2070,6 +2186,126 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {/* ===== レース手動登録モーダル ===== */}
+      {showManualRaceModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) { setShowManualRaceModal(false); setScheduleError(null) } }}
+        >
+          <div className="bg-[#0d1525] border border-[#1e2d4a] rounded-2xl p-5 w-80 shadow-2xl max-h-[90dvh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-bold text-white">📅 レース手動登録</h3>
+              <button
+                onClick={() => { setShowManualRaceModal(false); setScheduleError(null) }}
+                className="text-slate-500 hover:text-white text-xs"
+              >✕</button>
+            </div>
+
+            {scheduleError && (
+              <div className="mb-3 p-2.5 bg-amber-900/30 border border-amber-700/30 rounded-xl text-xs text-amber-400 leading-relaxed">
+                {scheduleError}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">レース名</label>
+                <input
+                  type="text"
+                  value={manualRaceForm.name}
+                  onChange={(e) => setManualRaceForm((p) => ({ ...p, name: e.target.value }))}
+                  placeholder="例: 天皇賞（春）2026"
+                  className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-400/50"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">開催日</label>
+                <input
+                  type="date"
+                  value={manualRaceForm.date}
+                  onChange={(e) => setManualRaceForm((p) => ({ ...p, date: e.target.value }))}
+                  className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-400/50"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">競馬場</label>
+                  <select
+                    value={manualRaceForm.venue}
+                    onChange={(e) => setManualRaceForm((p) => ({ ...p, venue: e.target.value }))}
+                    className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-400/50"
+                  >
+                    {['東京','阪神','中山','京都','中京','新潟','小倉','福島','函館','札幌'].map((v) => (
+                      <option key={v} value={v}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">グレード</label>
+                  <select
+                    value={manualRaceForm.grade}
+                    onChange={(e) => setManualRaceForm((p) => ({ ...p, grade: e.target.value }))}
+                    className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-400/50"
+                  >
+                    <option value="G1">G1</option>
+                    <option value="G2">G2</option>
+                    <option value="G3">G3</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">馬場</label>
+                  <select
+                    value={manualRaceForm.surface}
+                    onChange={(e) => setManualRaceForm((p) => ({ ...p, surface: e.target.value }))}
+                    className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-400/50"
+                  >
+                    <option value="芝">芝</option>
+                    <option value="ダート">ダート</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">距離 (m)</label>
+                  <input
+                    type="number"
+                    value={manualRaceForm.distance}
+                    onChange={(e) => setManualRaceForm((p) => ({ ...p, distance: e.target.value }))}
+                    placeholder="2000"
+                    className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-400/50"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {addRaceError && (
+              <div className="mt-3 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
+                {addRaceError}
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={() => { setShowManualRaceModal(false); setScheduleError(null) }}
+                className="flex-1 py-2 rounded-xl text-sm border border-[#1e2d4a] text-slate-300 hover:bg-[#1a2640] transition-all"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={handleAddManualRace}
+                disabled={addingRace || !manualRaceForm.name || !manualRaceForm.date || !manualRaceForm.distance}
+                className="flex-1 py-2 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white transition-all disabled:opacity-50"
+              >
+                {addingRace ? '登録中...' : '登録'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="h-8" />
     </div>
