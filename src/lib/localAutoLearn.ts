@@ -40,6 +40,8 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
     restIntervalMult:     empty(),
     courseFeatureMult:    empty(),
     paceMult:             empty(),
+    // v336
+    oddsMult:             empty(),
   }
 
   const races = await prisma.race.findMany({
@@ -81,12 +83,15 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
         ['restIntervalMult',     bonuses.restInterval     ?? 0],
         ['courseFeatureMult',    bonuses.courseFeature    ?? 0],
         ['paceMult',             bonuses.pace             ?? 0],
+        ['oddsMult',             bonuses.odds             ?? 0],
       ]
 
       for (const [key, val] of factorMap) {
-        if (val > 2) {
+        if (Math.abs(val) > 2) {
           stats[key].total++
-          if (isHit) stats[key].hits++
+          // 正ボーナス→的中で正解、負ボーナス→非的中で正解（両方向を学習）
+          const correctSignal = val > 0 ? isHit : !isHit
+          if (correctSignal) stats[key].hits++
         }
       }
     }
@@ -97,15 +102,22 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
 
 function nudgeWeights(current: LocalWeights, factorStats: FactorStatsMap): LocalWeights {
   const next = { ...current }
-  const STEP = 0.06
-  const MIN = 0.4
-  const MAX = 1.8
+  const BASE_STEP = 0.09
+  const MIN = 0.3
+  const MAX = 2.0
 
   for (const key of Object.keys(factorStats) as (keyof LocalWeights)[]) {
     const { hits, total } = factorStats[key]
     if (total < 5) continue
     const hitRate = hits / total
-    const delta = hitRate > 0.55 ? STEP : hitRate < 0.38 ? -STEP : 0
+    let delta = 0
+    if (hitRate > 0.58) {
+      // 精度が高い因子を強化: 偏差が大きいほどステップ大
+      delta = BASE_STEP * (1 + (hitRate - 0.58) * 2.5)
+    } else if (hitRate < 0.35) {
+      // 精度が低い因子を弱体化
+      delta = -BASE_STEP * (1 + (0.35 - hitRate) * 2.5)
+    }
     next[key] = Math.max(MIN, Math.min(MAX, current[key] + delta))
     next[key] = Math.round(next[key] * 100) / 100
   }
@@ -128,6 +140,7 @@ function prependForm(existingForm: string | null, position: number, maxLen = 7):
 // ========== メイン関数 ==========
 
 export async function autoLearnFromNewResult({
+  raceId,
   winnerName,
   secondName,
   raceName,
@@ -137,6 +150,7 @@ export async function autoLearnFromNewResult({
   distance,
   raceDate,
 }: {
+  raceId?: string
   winnerName: string
   secondName: string
   raceName: string
@@ -195,6 +209,34 @@ export async function autoLearnFromNewResult({
       }
       horsesUpdated++
     } catch { /* 個別エラーはスキップ */ }
+  }
+
+  // 入着しなかった馬のtotalRacesを更新（勝率の膨張を防ぐ）
+  // 既存のHorseStatがある馬のみ更新（新規作成はしない）
+  if (raceId) {
+    try {
+      const entries = await prisma.raceEntry.findMany({ where: { raceId } })
+      const placingNames = new Set([winnerName, secondName])
+      for (const entry of entries) {
+        if (placingNames.has(entry.horseName)) continue
+        const existing = await prisma.horseStat.findUnique({ where: { horseName: entry.horseName } })
+        if (!existing) continue
+        try {
+          await prisma.horseStat.update({
+            where: { horseName: entry.horseName },
+            data: {
+              totalRaces:   existing.totalRaces + 1,
+              g1Races:      isG1 ? existing.g1Races + 1 : existing.g1Races,
+              distanceData: mergeStatRecord(existing.distanceData as StatRecord, dk, false),
+              venueData:    mergeStatRecord(existing.venueData    as StatRecord, venue, false),
+              surfaceData:  mergeStatRecord(existing.surfaceData  as StatRecord, surface, false),
+              raceNameData: mergeStatRecord(existing.raceNameData as StatRecord, raceKey, false),
+              lastRaceDate: raceDate,
+            },
+          })
+        } catch { /* skip */ }
+      }
+    } catch { /* RaceEntry取得失敗はスキップ */ }
   }
 
   // 因子精度分析 → 重み調整

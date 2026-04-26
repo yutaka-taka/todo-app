@@ -183,6 +183,7 @@ export async function POST(request: NextRequest) {
 
     // ローカル自動学習: HorseStat更新 + 因子重み調整（Claude不要）
     const learnResult = await autoLearnFromNewResult({
+      raceId,
       winnerName: firstName,
       secondName,
       raceName: race.name,

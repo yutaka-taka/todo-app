@@ -17,6 +17,8 @@ export interface LocalWeights {
   restIntervalMult: number
   courseFeatureMult: number
   paceMult: number
+  // v336: 市場オッズ連動補正
+  oddsMult: number
 }
 
 export const DEFAULT_WEIGHTS: LocalWeights = {
@@ -36,6 +38,8 @@ export const DEFAULT_WEIGHTS: LocalWeights = {
   restIntervalMult:     1.0,
   courseFeatureMult:    1.0,
   paceMult:             1.0,
+  // オッズは強いシグナル。初期値1.2でやや重視
+  oddsMult:             1.2,
 }
 
 interface EntryInput {
@@ -90,6 +94,7 @@ export interface ScoredHorse {
       restInterval: number
       courseFeature: number
       pace: number
+      odds: number
     }
   }
 }
@@ -194,8 +199,23 @@ const PREP_RACES: Record<string, string[]> = {
 
 // ========== ヘルパー関数 ==========
 
+// Laplace平滑化: 事前確率を18頭中2頭 ≈ 11% に設定。
+// 旧: (places+2)/(races+8) → データなし馬に25%を与え過大評価していた。
 function smoothedRate(places: number, races: number): number {
-  return (places + 2) / (races + 8)
+  return (places + 1) / (races + 9)
+}
+
+// 市場人気補正: 全馬対象。データ量でスケールを調整する。
+// G1連対率実績: 1人気≈60%, 2人気≈45%, 3人気≈35%, 4-5人気≈25%, 6-9人気≈15%, 10人気以下≈7%
+function getOddsBonus(oddsPopularity: number | null | undefined): number {
+  if (oddsPopularity == null) return 0
+  if (oddsPopularity === 1)      return 12
+  if (oddsPopularity === 2)      return 8
+  if (oddsPopularity === 3)      return 5
+  if (oddsPopularity <= 5)       return 2
+  if (oddsPopularity <= 8)       return -1
+  if (oddsPopularity <= 12)      return -4
+  return -7
 }
 
 function parseRecentForm(form: string): number[] {
@@ -429,16 +449,17 @@ function buildScore(
     // 前走上がり3F（データなし時も反映）
     const ltfBonusRaw = getLastThreeFurlongBonus(entry.lastThreeFurlong, race.surface)
     partialBonus += Math.round(ltfBonusRaw * 0.5)
-    // 人気補正（データ皆無馬のみ・オッズ確定時）
+    // 人気補正（データなし馬は市場オッズを強く重視）
     if (entry.oddsPopularity != null) {
-      if (entry.oddsPopularity <= 3)      { partialBonus += 6; notes.push(`${entry.oddsPopularity}番人気`) }
-      else if (entry.oddsPopularity <= 6) { partialBonus += 2 }
+      const oddsRaw = getOddsBonus(entry.oddsPopularity)
+      partialBonus += Math.round(oddsRaw * 1.4)
+      if (entry.oddsPopularity <= 3) notes.push(`${entry.oddsPopularity}番人気`)
     }
     return {
       rank: 0,
       horseNumber: entry.horseNumber,
       horseName: entry.horseName,
-      placeRate: Math.max(20, Math.min(45, 26 + partialBonus)),
+      placeRate: Math.max(18, Math.min(50, 22 + partialBonus)),
       factors: {
         recentForm: 'データなし',
         distanceSuitability: '距離実績未収集',
@@ -777,28 +798,27 @@ function buildScore(
   const wCourseFeature = Math.round(courseFeatureBonus   * weights.courseFeatureMult)
   const wPace          = Math.round(paceBonus            * weights.paceMult)
 
+  // 人気補正（全馬対象）: データが豊富な馬ほどオッズへの依存を下げる
+  const oddsRaw = getOddsBonus(entry.oddsPopularity)
+  const oddsDataScale = stat.totalRaces >= 10 ? 0.35 : stat.totalRaces >= 4 ? 0.65 : 1.0
+  const wOdds = Math.round(oddsRaw * oddsDataScale * weights.oddsMult)
+
   const totalBonus = wRecentForm + wDistance + wVenue + wSurface + wG1 + wAge
     + wJockey + wRaceAffinity + wTrackCond + prepBonus + weightBonus
     + potentialBonus + trendBonus
-    + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace
+    + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace + wOdds
 
   const cappedBase = Math.min(effectiveBase, 60)
   // G1経験2戦以上の馬は最低スコアを底上げ（掲示板常連馬の過小評価防止）
   const minFloor = (race.grade === 'G1' && stat.g1Races >= 2) ? 24 : 20
-  // データ少数馬（3戦以下）への人気補正（オッズ確定時のみ・小幅）
-  let oddsAdj = 0
-  if (stat.totalRaces <= 3 && entry.oddsPopularity != null) {
-    if (entry.oddsPopularity <= 3)      oddsAdj = 6
-    else if (entry.oddsPopularity <= 6) oddsAdj = 2
-  }
-  const finalRate  = Math.max(minFloor, cappedBase + totalBonus + oddsAdj)
+  const finalRate = Math.max(minFloor, cappedBase + totalBonus)
 
   const reason = [
     `ベース連対率${(baseSmoothed * 100).toFixed(0)}%(${stat.totalRaces}戦)`,
     g1Note, ageNote, jockeyNote, trainerNote, weightNote,
     entry.lastThreeFurlong ? `上がり3F:${entry.lastThreeFurlong}秒` : '',
     entry.runningStyle && paceType !== 'medium' ? `${entry.runningStyle}/${paceType === 'high' ? 'ハイペース' : 'スロー'}展開` : '',
-    (oddsAdj > 0 && entry.oddsPopularity != null) ? `${entry.oddsPopularity}番人気(少数戦補正)` : '',
+    entry.oddsPopularity != null ? `${entry.oddsPopularity}番人気` : '',
   ].filter(Boolean).join('、')
 
   return {
@@ -829,6 +849,7 @@ function buildScore(
         restInterval: wRest,
         courseFeature: wCourseFeature,
         pace:         wPace,
+        odds:         wOdds,
       },
     },
   }
