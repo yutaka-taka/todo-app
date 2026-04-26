@@ -174,6 +174,7 @@ export default function Home() {
   const [races, setRaces] = useState<Race[]>([])
   const [targetDate, setTargetDate] = useState<string>('')
   const [selectedRace, setSelectedRace] = useState<Race | null>(null)
+  const [showRaceDetail, setShowRaceDetail] = useState(false)
   const [predictions, setPredictions] = useState<Prediction[]>([])
   const [analysis, setAnalysis] = useState<string>('')
   const [predictionMode, setPredictionMode] = useState<'ai' | 'local' | null>(null)
@@ -206,6 +207,8 @@ export default function Home() {
   // 馬体重入力
   const [showWeightForm, setShowWeightForm] = useState(false)
   const [horseWeightInputs, setHorseWeightInputs] = useState<Record<string, { weight: string; weightChange: string }>>({})
+  const [fetchingWeights, setFetchingWeights] = useState(false)
+  const [fetchWeightsMsg, setFetchWeightsMsg] = useState<string | null>(null)
 
   // 調教・詳細入力（上がり3F・脚質）
   const [showDetailForm, setShowDetailForm] = useState(false)
@@ -476,6 +479,7 @@ export default function Home() {
     setHorseWeightInputs({})
     setShowWeightForm(false)
     setWeatherData(null)
+    setShowRaceDetail(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
@@ -542,6 +546,38 @@ export default function Home() {
       setPredictError(e instanceof Error ? e.message : '予想の生成に失敗しました')
     } finally {
       setPredicting(false)
+    }
+  }
+
+  const handleFetchWeights = async () => {
+    if (!selectedRace) return
+    setFetchingWeights(true)
+    setFetchWeightsMsg(null)
+    try {
+      const res = await fetch('/api/fetch-weights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raceId: selectedRace.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      const newInputs: Record<string, { weight: string; weightChange: string }> = {}
+      for (const [name, result] of Object.entries(data.results as Record<string, { weight: number | null; weightChange: number | null }>)) {
+        if (result.weight != null) {
+          newInputs[name] = {
+            weight: String(result.weight),
+            weightChange: result.weightChange != null
+              ? (result.weightChange >= 0 ? `+${result.weightChange}` : String(result.weightChange))
+              : '',
+          }
+        }
+      }
+      setHorseWeightInputs((prev) => ({ ...prev, ...newInputs }))
+      setFetchWeightsMsg(data.message ?? '取得完了')
+    } catch (e) {
+      setFetchWeightsMsg(`取得失敗: ${e instanceof Error ? e.message : 'エラー'}`)
+    } finally {
+      setFetchingWeights(false)
     }
   }
 
@@ -1095,56 +1131,6 @@ export default function Home() {
             {/* 区切り線 */}
             <div className="my-3 border-t border-[#1e2d4a]" />
 
-            {/* ② 週末レース再検証ボタン */}
-            <button
-              onClick={handleVerify}
-              disabled={learning || verifying}
-              className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white"
-            >
-              {verifying ? (
-                <>
-                  <Spinner size={4} />
-                  <span className="pulse-gold">再検証中... (30-60秒)</span>
-                </>
-              ) : (
-                <>
-                  <span>↻</span>
-                  <span>週末レース 出走馬を再検証</span>
-                </>
-              )}
-            </button>
-
-            {verifyError && (
-              <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
-                {verifyError}
-              </div>
-            )}
-
-            {verifyResult && (
-              <div className="mt-2 fade-in space-y-1">
-                <p className={`text-xs text-center ${verifyResult.verified > 0 ? 'text-blue-400' : 'text-slate-400'}`}>
-                  {verifyResult.message}
-                </p>
-                {verifyResult.races && verifyResult.races.length > 0 && (
-                  <div className="bg-[#080c18] rounded-xl p-3 space-y-1">
-                    {verifyResult.races.map((r, i) => (
-                      <div key={i} className="flex items-start gap-2 text-xs">
-                        <span className={r.verified > 0 ? 'text-blue-400' : 'text-slate-500'}>
-                          {r.verified > 0 ? '✓' : '✗'}
-                        </span>
-                        <span className={r.verified > 0 ? 'text-blue-300' : 'text-slate-500'}>
-                          {r.raceName.replace(/\d{4}$/, '')}（{r.raceDate}）{r.verified > 0 ? `${r.verified}頭` : r.message}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 区切り線 */}
-            <div className="my-3 border-t border-[#1e2d4a]" />
-
             {/* ③ 全レース再検証ボタン */}
             <button
               onClick={() => setReanalyzeConfirm(true)}
@@ -1530,660 +1516,746 @@ export default function Home() {
           </div>
         )}
 
-        {/* 日付ヘッダー */}
-        <div className="mb-3 flex items-end justify-between">
-          <div>
-            <p className="text-xs text-slate-500 mb-0.5">
-              {targetIsToday ? '本日' : '次の'}G1/G2レース
-            </p>
-            <h2 className="text-xl font-bold text-white">
-              {targetDateFormatted || '読み込み中...'}
-            </h2>
-          </div>
-          <div className="flex items-center gap-2 pb-0.5">
-            <button
-              onClick={() => { setAddRaceError(null); setShowManualRaceModal(true) }}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[10px] font-medium border border-[#1e2d4a] text-slate-500 hover:border-slate-400/50 hover:text-slate-300 transition-all"
-              title="レースを手動登録"
-            >
-              ✏️
-            </button>
-            <button
-              onClick={handleFetchSchedule}
-              disabled={fetchingSchedule || loadingRaces}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-blue-400/50 hover:text-blue-400 transition-all disabled:opacity-50"
-            >
-              {fetchingSchedule
-                ? <><Spinner size={3} /><span>取得中...</span></>
-                : <><span>📅</span><span>日程取得</span></>}
-            </button>
-          </div>
-        </div>
-
-        {/* 日程取得結果 */}
-        {scheduleResult && (
-          <div className="mb-3 fade-in p-3 bg-emerald-900/20 border border-emerald-700/30 rounded-xl">
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-emerald-400 font-medium">✓ {scheduleResult.message}</p>
-              <button onClick={() => setScheduleResult(null)} className="text-slate-600 hover:text-slate-400 text-xs">✕</button>
+        {/* ======= リスト画面 ======= */}
+        {!showRaceDetail && (
+          <>
+            {/* 日付ヘッダー */}
+            <div className="mb-3 flex items-end justify-between">
+              <div>
+                <p className="text-xs text-slate-500 mb-0.5">
+                  {targetIsToday ? '本日' : '次の'}G1/G2レース
+                </p>
+                <h2 className="text-xl font-bold text-white">
+                  {targetDateFormatted || '読み込み中...'}
+                </h2>
+              </div>
+              <div className="flex items-center gap-2 pb-0.5">
+                <button
+                  onClick={() => { setAddRaceError(null); setShowManualRaceModal(true) }}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[10px] font-medium border border-[#1e2d4a] text-slate-500 hover:border-slate-400/50 hover:text-slate-300 transition-all"
+                  title="レースを手動登録"
+                >
+                  ✏️
+                </button>
+                <button
+                  onClick={handleFetchSchedule}
+                  disabled={fetchingSchedule || loadingRaces}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-blue-400/50 hover:text-blue-400 transition-all disabled:opacity-50"
+                >
+                  {fetchingSchedule
+                    ? <><Spinner size={3} /><span>取得中...</span></>
+                    : <><span>📅</span><span>日程取得</span></>}
+                </button>
+              </div>
             </div>
-            {scheduleResult.races.length > 0 && (
-              <div className="mt-1.5 space-y-0.5">
-                {scheduleResult.races.slice(0, 5).map((r) => (
-                  <p key={r.name} className="text-[10px] text-emerald-300">
-                    {r.name}（{r.date} {r.venue}）
-                  </p>
-                ))}
-                {scheduleResult.races.length > 5 && (
-                  <p className="text-[10px] text-slate-500">他 {scheduleResult.races.length - 5}件</p>
+
+            {/* 日程取得結果 */}
+            {scheduleResult && (
+              <div className="mb-3 fade-in p-3 bg-emerald-900/20 border border-emerald-700/30 rounded-xl">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-emerald-400 font-medium">✓ {scheduleResult.message}</p>
+                  <button onClick={() => setScheduleResult(null)} className="text-slate-600 hover:text-slate-400 text-xs">✕</button>
+                </div>
+                {scheduleResult.races.length > 0 && (
+                  <div className="mt-1.5 space-y-0.5">
+                    {scheduleResult.races.slice(0, 5).map((r) => (
+                      <p key={r.name} className="text-[10px] text-emerald-300">
+                        {r.name}（{r.date} {r.venue}）
+                      </p>
+                    ))}
+                    {scheduleResult.races.length > 5 && (
+                      <p className="text-[10px] text-slate-500">他 {scheduleResult.races.length - 5}件</p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
-          </div>
-        )}
 
-        {/* レース一覧 */}
-        {loadingRaces ? (
-          <div className="flex items-center justify-center py-12">
-            <Spinner size={8} />
-          </div>
-        ) : raceError ? (
-          <div className="bg-red-900/20 border border-red-800/50 rounded-2xl p-4 text-center">
-            <p className="text-red-400 text-sm">{raceError}</p>
-            <button onClick={fetchRaces} className="mt-2 text-xs text-red-400 underline">再試行</button>
-          </div>
-        ) : races.length === 0 ? (
-          <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-6 text-center">
-            <p className="text-4xl mb-3">🔍</p>
-            <p className="text-slate-400 text-sm">この週のG1/G2レースは登録されていません。</p>
-            <div className="mt-3 space-y-2">
-              <button
-                onClick={handleFetchSchedule}
-                disabled={fetchingSchedule}
-                className="w-full py-2 rounded-xl text-xs font-medium bg-blue-600/20 border border-blue-600/50 text-blue-400 hover:bg-blue-600/30 transition-all disabled:opacity-50"
-              >
-                {fetchingSchedule ? '取得中...' : '📅 ネットから日程を取得'}
-              </button>
-              <button
-                onClick={() => { setAddRaceError(null); setShowManualRaceModal(true) }}
-                className="w-full py-2 rounded-xl text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-[#2e4a6a] transition-all"
-              >
-                ✏️ レースを手動で登録
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2 mb-4">
-            {races.map((race) => (
-              <button
-                key={race.id}
-                onClick={() => handleSelectRace(race)}
-                className={`race-card w-full text-left bg-[#0f1729] border rounded-2xl p-4 ${
-                  selectedRace?.id === race.id
-                    ? 'selected border-yellow-400'
-                    : 'border-[#1e2d4a] hover:border-[#2e4a6a]'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
-                        race.grade === 'G1' ? 'bg-yellow-400 text-black' : 'bg-slate-300 text-black'
-                      }`}>
-                        {race.grade}
-                      </span>
-                      <span className="text-[11px] text-slate-500">{race.venue}</span>
-                    </div>
-                    <h3 className="text-base font-bold text-white truncate">{race.name}</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      {race.surface} {race.distance}m
-                      {race.entries.length > 0 && ` · ${race.entries.length}頭出走`}
-                    </p>
-                  </div>
-                  {selectedRace?.id === race.id && (
-                    <span className="text-yellow-400 text-lg">✓</span>
-                  )}
-                </div>
-                {race.entries.length > 0 && selectedRace?.id === race.id && (
-                  <div className="mt-3 pt-3 border-t border-[#1e2d4a]">
-                    <p className="text-[10px] text-slate-500 mb-1.5">出走馬</p>
-                    <div className="flex flex-wrap gap-1">
-                      {race.entries.slice(0, 8).map((entry) => (
-                        <span
-                          key={entry.horseNumber}
-                          className="text-[10px] bg-[#080c18] text-slate-300 px-2 py-0.5 rounded-full border border-[#1e2d4a]"
-                        >
-                          {entry.horseNumber}.{entry.horseName}
-                        </span>
-                      ))}
-                      {race.entries.length > 8 && (
-                        <span className="text-[10px] text-slate-500 px-2 py-0.5">
-                          +{race.entries.length - 8}頭
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* 馬体重入力フォーム */}
-        {selectedRace && (
-          <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden">
-            <button
-              className="w-full flex items-center justify-between px-4 py-3"
-              onClick={() => setShowWeightForm(!showWeightForm)}
-            >
-              <span className="text-sm font-bold text-white flex items-center gap-2">
-                <span>⚖️</span>
-                <span>馬体重入力（任意）</span>
-              </span>
-              <div className="flex items-center gap-2">
-                {(() => {
-                  const filled = Object.values(horseWeightInputs).filter((v) => v.weight || v.weightChange).length
-                  return filled > 0 ? (
-                    <span className="text-[10px] text-yellow-400 font-bold">{filled}頭入力済み</span>
-                  ) : (
-                    <span className="text-[10px] text-slate-500">当日発表の体重で精度向上</span>
-                  )
-                })()}
-                <span className="text-slate-500 text-xs">{showWeightForm ? '▲' : '▼'}</span>
+            {/* レース一覧 */}
+            {loadingRaces ? (
+              <div className="flex items-center justify-center py-12">
+                <Spinner size={8} />
               </div>
-            </button>
-            {showWeightForm && (
-              <div className="px-4 pb-4 border-t border-[#1e2d4a]">
-                {selectedRace.entries.length === 0 ? (
-                  <div className="py-3 text-center">
-                    <p className="text-xs text-slate-400">出走馬が未登録のため入力できません</p>
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      「🧠 自己学習」→「↻ 週末レース 出走馬を再検証」を実行すると出走馬が登録されます
-                    </p>
-                  </div>
-                ) : (
-                <>
-                <div className="grid grid-cols-[auto_1fr_68px_56px] gap-x-2 px-1 py-2">
-                  <span className="text-[9px] text-slate-600"></span>
-                  <span className="text-[9px] text-slate-600"></span>
-                  <span className="text-[9px] text-slate-600 text-right">体重(kg)</span>
-                  <span className="text-[9px] text-slate-600 text-right">前走比</span>
-                </div>
-                <div className="space-y-1.5">
-                  {selectedRace.entries.map((entry) => {
-                    const key = entry.horseName
-                    const inputs = horseWeightInputs[key] ?? { weight: '', weightChange: '' }
-                    return (
-                      <div key={entry.horseNumber} className="grid grid-cols-[auto_1fr_68px_56px] gap-x-2 items-center">
-                        <span className="text-[10px] text-slate-500 w-6 text-right">{entry.horseNumber}.</span>
-                        <span className="text-xs text-white truncate">{entry.horseName}</span>
-                        <input
-                          type="number"
-                          value={inputs.weight}
-                          onChange={(e) =>
-                            setHorseWeightInputs((prev) => ({
-                              ...prev,
-                              [key]: { ...(prev[key] ?? { weight: '', weightChange: '' }), weight: e.target.value },
-                            }))
-                          }
-                          placeholder="480"
-                          min={300}
-                          max={700}
-                          className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
-                        />
-                        <input
-                          type="number"
-                          value={inputs.weightChange}
-                          onChange={(e) =>
-                            setHorseWeightInputs((prev) => ({
-                              ...prev,
-                              [key]: { ...(prev[key] ?? { weight: '', weightChange: '' }), weightChange: e.target.value },
-                            }))
-                          }
-                          placeholder="±0"
-                          className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
-                {Object.values(horseWeightInputs).some((v) => v.weight || v.weightChange) && (
+            ) : raceError ? (
+              <div className="bg-red-900/20 border border-red-800/50 rounded-2xl p-4 text-center">
+                <p className="text-red-400 text-sm">{raceError}</p>
+                <button onClick={fetchRaces} className="mt-2 text-xs text-red-400 underline">再試行</button>
+              </div>
+            ) : races.length === 0 ? (
+              <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-6 text-center">
+                <p className="text-4xl mb-3">🔍</p>
+                <p className="text-slate-400 text-sm">この週のG1/G2レースは登録されていません。</p>
+                <div className="mt-3 space-y-2">
                   <button
-                    onClick={() => setHorseWeightInputs({})}
-                    className="mt-3 text-[10px] text-slate-500 hover:text-red-400 transition-colors"
+                    onClick={handleFetchSchedule}
+                    disabled={fetchingSchedule}
+                    className="w-full py-2 rounded-xl text-xs font-medium bg-blue-600/20 border border-blue-600/50 text-blue-400 hover:bg-blue-600/30 transition-all disabled:opacity-50"
                   >
-                    入力クリア
+                    {fetchingSchedule ? '取得中...' : '📅 ネットから日程を取得'}
                   </button>
-                )}
-                </>
-                )}
+                  <button
+                    onClick={() => { setAddRaceError(null); setShowManualRaceModal(true) }}
+                    className="w-full py-2 rounded-xl text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-[#2e4a6a] transition-all"
+                  >
+                    ✏️ レースを手動で登録
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2 mb-4">
+                {races.map((race) => (
+                  <button
+                    key={race.id}
+                    onClick={() => handleSelectRace(race)}
+                    className={`race-card w-full text-left bg-[#0f1729] border rounded-2xl p-4 ${
+                      selectedRace?.id === race.id
+                        ? 'selected border-yellow-400'
+                        : 'border-[#1e2d4a] hover:border-[#2e4a6a]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
+                            race.grade === 'G1' ? 'bg-yellow-400 text-black' : 'bg-slate-300 text-black'
+                          }`}>
+                            {race.grade}
+                          </span>
+                          <span className="text-[11px] text-slate-500">{race.venue}</span>
+                        </div>
+                        <h3 className="text-base font-bold text-white truncate">{race.name}</h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {race.surface} {race.distance}m
+                          {race.entries.length > 0 && ` · ${race.entries.length}頭出走`}
+                        </p>
+                      </div>
+                      <span className="text-slate-400 text-base self-center">›</span>
+                    </div>
+                  </button>
+                ))}
               </div>
             )}
-          </div>
-        )}
 
-        {/* 上がり3F・脚質入力カード */}
-        {selectedRace && (
-          <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden">
-            <button
-              className="w-full flex items-center justify-between px-4 py-3"
-              onClick={() => setShowDetailForm(!showDetailForm)}
-            >
-              <span className="text-sm font-bold text-white flex items-center gap-2">
-                <span>📊</span>
-                <span>上がり3F・脚質（任意）</span>
-              </span>
-              <div className="flex items-center gap-2">
-                {(() => {
-                  const filled = Object.values(horseDetailInputs).filter((v) => v.lastThreeFurlong || v.runningStyle).length
-                  return filled > 0 ? (
-                    <span className="text-[10px] text-yellow-400 font-bold">{filled}頭入力済み</span>
-                  ) : (
-                    <span className="text-[10px] text-slate-500">netkeiba から一括取得可</span>
-                  )
-                })()}
-                <span className="text-slate-500 text-xs">{showDetailForm ? '▲' : '▼'}</span>
-              </div>
-            </button>
-            {showDetailForm && (
-              <div className="px-4 pb-4 border-t border-[#1e2d4a]">
-                {selectedRace.entries.length === 0 ? (
-                  <p className="py-3 text-xs text-slate-400 text-center">出走馬未登録。「↻ 週末レース 出走馬を再検証」を実行してください</p>
+            {/* 週末レース出走馬登録 */}
+            <div className="mb-4">
+              <button
+                onClick={handleVerify}
+                disabled={learning || learningAll || verifying}
+                className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white"
+              >
+                {verifying ? (
+                  <>
+                    <Spinner size={4} />
+                    <span className="pulse-gold">登録中... (30-60秒)</span>
+                  </>
                 ) : (
                   <>
-                  {/* 一括取得ボタン */}
-                  <div className="pt-3 pb-2">
+                    <span>↻</span>
+                    <span>週末レース出走馬登録</span>
+                  </>
+                )}
+              </button>
+              {verifyError && (
+                <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
+                  {verifyError}
+                </div>
+              )}
+              {verifyResult && (
+                <div className="mt-2 fade-in space-y-1">
+                  <p className={`text-xs text-center ${verifyResult.verified > 0 ? 'text-blue-400' : 'text-slate-400'}`}>
+                    {verifyResult.message}
+                  </p>
+                  {verifyResult.races && verifyResult.races.length > 0 && (
+                    <div className="bg-[#080c18] rounded-xl p-3 space-y-1">
+                      {verifyResult.races.map((r, i) => (
+                        <div key={i} className="flex items-start gap-2 text-xs">
+                          <span className={r.verified > 0 ? 'text-blue-400' : 'text-slate-500'}>
+                            {r.verified > 0 ? '✓' : '✗'}
+                          </span>
+                          <span className={r.verified > 0 ? 'text-blue-300' : 'text-slate-500'}>
+                            {r.raceName.replace(/\d{4}$/, '')}（{r.raceDate}）{r.verified > 0 ? `${r.verified}頭` : r.message}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 初期状態 */}
+            {!loadingRaces && races.length > 0 && !selectedRace && (
+              <div className="text-center py-8">
+                <p className="text-4xl mb-3">☝️</p>
+                <p className="text-slate-400 text-sm">上からレースを選んで「予想する」を押してください</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ======= 詳細画面 ======= */}
+        {showRaceDetail && selectedRace && (
+          <>
+            {/* 戻るボタン */}
+            <button
+              onClick={() => setShowRaceDetail(false)}
+              className="mb-4 flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors"
+            >
+              ← 一覧に戻る
+            </button>
+
+            {/* レース情報ヘッダー */}
+            <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
+                  selectedRace.grade === 'G1' ? 'bg-yellow-400 text-black' : 'bg-slate-300 text-black'
+                }`}>
+                  {selectedRace.grade}
+                </span>
+                <span className="text-xs text-slate-400">{selectedRace.venue}</span>
+                <span className="text-xs text-slate-400">{selectedRace.surface} {selectedRace.distance}m</span>
+              </div>
+              <h2 className="text-lg font-bold text-white mb-2">{selectedRace.name}</h2>
+              {selectedRace.entries.length > 0 ? (
+                <div>
+                  <p className="text-[10px] text-slate-500 mb-1.5">{selectedRace.entries.length}頭出走</p>
+                  <div className="flex flex-wrap gap-1">
+                    {selectedRace.entries.map((entry) => (
+                      <span key={entry.horseNumber} className="text-[10px] bg-[#080c18] text-slate-300 px-2 py-0.5 rounded-full border border-[#1e2d4a]">
+                        {entry.horseNumber}.{entry.horseName}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">出走馬未登録 — 一覧の「週末レース出走馬登録」を実行してください</p>
+              )}
+            </div>
+
+            {/* 馬体重入力フォーム */}
+            <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden">
+              <button
+                className="w-full flex items-center justify-between px-4 py-3"
+                onClick={() => setShowWeightForm(!showWeightForm)}
+              >
+                <span className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>⚖️</span>
+                  <span>馬体重入力（任意）</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const filled = Object.values(horseWeightInputs).filter((v) => v.weight || v.weightChange).length
+                    return filled > 0 ? (
+                      <span className="text-[10px] text-yellow-400 font-bold">{filled}頭入力済み</span>
+                    ) : (
+                      <span className="text-[10px] text-slate-500">当日発表の体重で精度向上</span>
+                    )
+                  })()}
+                  <span className="text-slate-500 text-xs">{showWeightForm ? '▲' : '▼'}</span>
+                </div>
+              </button>
+              {showWeightForm && (
+                <div className="px-4 pb-4 border-t border-[#1e2d4a]">
+                  {selectedRace.entries.length === 0 ? (
+                    <div className="py-3 text-center">
+                      <p className="text-xs text-slate-400">出走馬が未登録のため入力できません</p>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        「週末レース出走馬登録」を実行すると出走馬が登録されます
+                      </p>
+                    </div>
+                  ) : (
+                  <>
+                  {/* 自動取得ボタン */}
+                  <div className="pt-2 pb-3">
                     <button
-                      onClick={handleFetchTraining}
-                      disabled={fetchingTraining}
-                      className="w-full py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 bg-[#080c18] border border-cyan-700/50 text-cyan-400 hover:border-cyan-400/70 active:scale-95"
+                      onClick={handleFetchWeights}
+                      disabled={fetchingWeights}
+                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-[#1e2d4a] hover:bg-[#243558] disabled:opacity-50 transition-colors"
                     >
-                      {fetchingTraining ? (
-                        <>
-                          <Spinner size={3} />
-                          <span>netkeiba から取得中... ({selectedRace.entries.length}頭)</span>
-                        </>
+                      {fetchingWeights ? (
+                        <span className="text-[11px] text-slate-300">取得中...</span>
                       ) : (
                         <>
-                          <span>🌐</span>
-                          <span>netkeiba から上がり3F・脚質を一括取得</span>
+                          <span className="text-[11px]">🌐</span>
+                          <span className="text-[11px] text-slate-200">netkeiba から馬体重を自動取得</span>
+                          <span className="text-[9px] text-slate-500">（当日発表後）</span>
                         </>
                       )}
                     </button>
-                    {fetchTrainingMsg && (
-                      <p className={`mt-1.5 text-[10px] text-center ${fetchTrainingMsg.includes('失敗') ? 'text-red-400' : 'text-emerald-400'}`}>
-                        {fetchTrainingMsg}
+                    {fetchWeightsMsg && (
+                      <p className={`mt-1.5 text-[10px] text-center ${fetchWeightsMsg.includes('失敗') || fetchWeightsMsg.includes('ありません') ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {fetchWeightsMsg}
                       </p>
                     )}
-                    <p className="mt-1 text-[9px] text-slate-600 text-center">取得後に手動修正も可能です。脚質は4頭以上で展開予測が有効になります。</p>
                   </div>
-                  <div className="grid grid-cols-[auto_1fr_72px_52px] gap-x-2 px-1 py-1.5 border-t border-[#1e2d4a]">
+                  <div className="grid grid-cols-[auto_1fr_68px_56px] gap-x-2 px-1 py-2">
                     <span className="text-[9px] text-slate-600"></span>
                     <span className="text-[9px] text-slate-600"></span>
-                    <span className="text-[9px] text-slate-600 text-right">上がり3F秒</span>
-                    <span className="text-[9px] text-slate-600 text-center">脚質</span>
+                    <span className="text-[9px] text-slate-600 text-right">体重(kg)</span>
+                    <span className="text-[9px] text-slate-600 text-right">前走比</span>
                   </div>
                   <div className="space-y-1.5">
                     {selectedRace.entries.map((entry) => {
                       const key = entry.horseName
-                      const inputs = horseDetailInputs[key] ?? { lastThreeFurlong: '', runningStyle: '' }
+                      const inputs = horseWeightInputs[key] ?? { weight: '', weightChange: '' }
                       return (
-                        <div key={entry.horseNumber} className="grid grid-cols-[auto_1fr_72px_52px] gap-x-2 items-center">
+                        <div key={entry.horseNumber} className="grid grid-cols-[auto_1fr_68px_56px] gap-x-2 items-center">
                           <span className="text-[10px] text-slate-500 w-6 text-right">{entry.horseNumber}.</span>
                           <span className="text-xs text-white truncate">{entry.horseName}</span>
-                          {/* 上がり3F */}
                           <input
                             type="number"
-                            value={inputs.lastThreeFurlong}
-                            onChange={(e) => setHorseDetailInputs((prev) => ({
-                              ...prev,
-                              [key]: { ...(prev[key] ?? { lastThreeFurlong: '', runningStyle: '' }), lastThreeFurlong: e.target.value },
-                            }))}
-                            placeholder="33.5"
-                            step="0.1"
-                            min={30}
-                            max={42}
+                            value={inputs.weight}
+                            onChange={(e) =>
+                              setHorseWeightInputs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { weight: '', weightChange: '' }), weight: e.target.value },
+                              }))
+                            }
+                            placeholder="480"
+                            min={300}
+                            max={700}
                             className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
                           />
-                          {/* 脚質 */}
-                          <select
-                            value={inputs.runningStyle}
-                            onChange={(e) => setHorseDetailInputs((prev) => ({
-                              ...prev,
-                              [key]: { ...(prev[key] ?? { lastThreeFurlong: '', runningStyle: '' }), runningStyle: e.target.value },
-                            }))}
-                            className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-1 py-1 text-xs text-white text-center focus:outline-none focus:border-yellow-400/50"
-                          >
-                            <option value="">-</option>
-                            <option value="逃">逃</option>
-                            <option value="先">先</option>
-                            <option value="差">差</option>
-                            <option value="追">追</option>
-                          </select>
+                          <input
+                            type="number"
+                            value={inputs.weightChange}
+                            onChange={(e) =>
+                              setHorseWeightInputs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { weight: '', weightChange: '' }), weightChange: e.target.value },
+                              }))
+                            }
+                            placeholder="±0"
+                            className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
+                          />
                         </div>
                       )
                     })}
                   </div>
-                  {Object.values(horseDetailInputs).some((v) => v.lastThreeFurlong || v.runningStyle) && (
+                  {Object.values(horseWeightInputs).some((v) => v.weight || v.weightChange) && (
                     <button
-                      onClick={() => setHorseDetailInputs({})}
+                      onClick={() => setHorseWeightInputs({})}
                       className="mt-3 text-[10px] text-slate-500 hover:text-red-400 transition-colors"
                     >
                       入力クリア
                     </button>
                   )}
                   </>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 天気・馬場状態カード */}
-        {selectedRace && (
-          <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-bold text-white flex items-center gap-2">
-                <span>🌤️</span>
-                <span>当日天気・馬場状態</span>
-              </span>
-              {fetchingWeather && <span className="text-[10px] text-slate-400">取得中...</span>}
-            </div>
-            {weatherData && !fetchingWeather && (
-              <div className="flex items-center gap-3 mb-3 text-sm">
-                <span className="text-2xl">{weatherData.icon}</span>
-                <div>
-                  <span className="text-white font-bold">{weatherData.weather}</span>
-                  <span className="text-slate-400 ml-2">{weatherData.temperature}°C</span>
-                  {weatherData.precipMm > 0 && (
-                    <span className="text-slate-400 ml-2">降水{weatherData.precipMm.toFixed(1)}mm</span>
                   )}
                 </div>
-              </div>
-            )}
-            {!weatherData && !fetchingWeather && (
-              <p className="text-xs text-slate-500 mb-3">天気データを取得できませんでした</p>
-            )}
-            <div>
-              <p className="text-[10px] text-slate-500 mb-1.5">馬場状態を選択</p>
-              <div className="flex gap-2">
-                {(['良', '稍重', '重', '不良'] as const).map((cond) => (
-                  <button
-                    key={cond}
-                    onClick={() => setTrackCondition(cond)}
-                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                      trackCondition === cond
-                        ? 'bg-yellow-400 text-black'
-                        : 'bg-[#080c18] border border-[#1e2d4a] text-slate-400 hover:border-yellow-400/50'
-                    }`}
-                  >
-                    {cond}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 予想ボタン */}
-        {selectedRace && (
-          <div className="sticky bottom-safe mb-4">
-            <button
-              onClick={handlePredict}
-              disabled={predicting}
-              className="w-full py-4 rounded-2xl font-black text-base tracking-wide transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed shadow-xl bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 text-black active:scale-95"
-              style={{ boxShadow: '0 4px 24px rgba(245, 197, 24, 0.35)' }}
-            >
-              {predicting ? (
-                <>
-                  <Spinner size={5} />
-                  <span>AIが予測中... (30-60秒)</span>
-                </>
-              ) : (
-                <>
-                  <span>🔮</span>
-                  <span>{selectedRace.name} を予想する</span>
-                </>
               )}
-            </button>
-          </div>
-        )}
+            </div>
 
-        {/* 予測エラー */}
-        {predictError && (
-          <div className="mb-4 p-3 bg-red-900/30 border border-red-800/50 rounded-2xl">
-            <p className="text-red-400 text-sm">{predictError}</p>
-          </div>
-        )}
-
-        {/* 予測結果 */}
-        {predictions.length > 0 && (
-          <div className="fade-in">
-            <div className="flex items-center gap-2 mb-3">
-              <h2 className="text-base font-bold text-white">予想結果</h2>
-              <span className="text-xs text-slate-500">— 連対率上位5頭</span>
-              {predictionMode === 'local' && (
-                <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-900/50 text-emerald-400 border border-emerald-700/50">
-                  🤖 API不要
+            {/* 上がり3F・脚質入力カード */}
+            <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden">
+              <button
+                className="w-full flex items-center justify-between px-4 py-3"
+                onClick={() => setShowDetailForm(!showDetailForm)}
+              >
+                <span className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>📊</span>
+                  <span>上がり3F・脚質（任意）</span>
                 </span>
-              )}
-              {predictionMode === 'ai' && (
-                <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-400 border border-purple-700/50">
-                  ✨ Claude AI
-                </span>
-              )}
-            </div>
-
-            {analysis && (
-              <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-yellow-400">🔍</span>
-                  <p className="text-xs font-bold text-yellow-400">レース展望</p>
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const filled = Object.values(horseDetailInputs).filter((v) => v.lastThreeFurlong || v.runningStyle).length
+                    return filled > 0 ? (
+                      <span className="text-[10px] text-yellow-400 font-bold">{filled}頭入力済み</span>
+                    ) : (
+                      <span className="text-[10px] text-slate-500">netkeiba から一括取得可</span>
+                    )
+                  })()}
+                  <span className="text-slate-500 text-xs">{showDetailForm ? '▲' : '▼'}</span>
                 </div>
-                <p className="text-xs text-slate-300 leading-relaxed">{analysis}</p>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              {predictions.map((pred, i) => (
-                <div
-                  key={i}
-                  className="fade-in bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden"
-                  style={{ animationDelay: `${i * 0.1}s` }}
-                >
-                  <button
-                    className="w-full text-left p-4"
-                    onClick={() => setExpandedCard(expandedCard === i ? null : i)}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${rankColors[i]} flex items-center justify-center flex-shrink-0`}>
-                        <span className="text-black font-black text-sm">{rankLabels[i]}</span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          {pred.horseNumber && (
-                            <span className="text-xs text-slate-500 font-mono">{pred.horseNumber}番</span>
-                          )}
-                          <span className="text-base font-bold text-white truncate">{pred.horseName}</span>
-                        </div>
-                        <PlaceRateBar rate={pred.placeRate} />
-                      </div>
-                      <span className="text-slate-600 text-xs flex-shrink-0">{expandedCard === i ? '▲' : '▼'}</span>
-                    </div>
-                  </button>
-                  {expandedCard === i && pred.factors && (
-                    <div className="px-4 pb-4 border-t border-[#1e2d4a] pt-3">
-                      <div className="space-y-2">
-                        {pred.factors.reason && (
-                          <div>
-                            <p className="text-[10px] text-yellow-400 font-bold mb-1">総合評価</p>
-                            <p className="text-xs text-slate-300 leading-relaxed">{pred.factors.reason}</p>
-                          </div>
-                        )}
-                        <div className="grid grid-cols-2 gap-2 mt-2">
-                          {pred.factors.recentForm && (
-                            <div className="bg-[#080c18] rounded-xl p-2">
-                              <p className="text-[9px] text-slate-500 mb-0.5">最近の成績</p>
-                              <p className="text-[11px] text-slate-300">{pred.factors.recentForm}</p>
-                            </div>
-                          )}
-                          {pred.factors.distanceSuitability && (
-                            <div className="bg-[#080c18] rounded-xl p-2">
-                              <p className="text-[9px] text-slate-500 mb-0.5">距離適性</p>
-                              <p className="text-[11px] text-slate-300">{pred.factors.distanceSuitability}</p>
-                            </div>
-                          )}
-                          {pred.factors.courseRecord && (
-                            <div className="bg-[#080c18] rounded-xl p-2">
-                              <p className="text-[9px] text-slate-500 mb-0.5">コース実績</p>
-                              <p className="text-[11px] text-slate-300">{pred.factors.courseRecord}</p>
-                            </div>
-                          )}
-                          {pred.factors.jockeyStats && (
-                            <div className="bg-[#080c18] rounded-xl p-2">
-                              <p className="text-[9px] text-slate-500 mb-0.5">騎手評価</p>
-                              <p className="text-[11px] text-slate-300">{pred.factors.jockeyStats}</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            {/* インライン結果入力 */}
-            {selectedRace && (() => {
-              const raceDate = new Date(selectedRace.date)
-              const isRacePast = raceDate <= today
-              const feedback = resultFeedback[selectedRace.id]
-              const inputs = resultInputs[selectedRace.id] ?? { first: '', second: '' }
-              const isSubmitting = submittingResult === selectedRace.id
-              const err = resultError[selectedRace.id]
-
-              return (
-                <div className="mt-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span>📊</span>
-                    <h3 className="text-sm font-bold text-white">予想結果の照合</h3>
-                  </div>
-
-                  {feedback ? (
-                    <div className="fade-in">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className={`text-lg font-black ${feedback.accuracy >= 50 ? 'text-emerald-400' : 'text-orange-400'}`}>
-                          {feedback.accuracy}%
-                        </span>
-                        <span className="text-xs text-slate-400">{feedback.missInfo}</span>
-                      </div>
-                      {feedback.patternAnalysis && (
-                        <div className="bg-[#080c18] rounded-xl p-3 mb-2">
-                          <p className="text-[9px] text-teal-400 font-bold mb-1">📈 パターン分析</p>
-                          <p className="text-[10px] text-slate-300 leading-relaxed">{feedback.patternAnalysis}</p>
-                        </div>
-                      )}
-                      {feedback.algorithmChange && (
-                        <div className="bg-[#080c18] rounded-xl p-3">
-                          <p className="text-[9px] text-yellow-400 font-bold mb-1">🔧 アルゴリズム改善点</p>
-                          <p className="text-[10px] text-slate-300 leading-relaxed">{feedback.algorithmChange}</p>
-                        </div>
-                      )}
-                      {feedback.overallStats && (
-                        <p className="text-[9px] text-slate-600 mt-2 text-right">
-                          累積: {feedback.overallStats.total}レース / 通算{feedback.overallStats.accuracy}%
-                        </p>
-                      )}
-                    </div>
-                  ) : isRacePast ? (
+              </button>
+              {showDetailForm && (
+                <div className="px-4 pb-4 border-t border-[#1e2d4a]">
+                  {selectedRace.entries.length === 0 ? (
+                    <p className="py-3 text-xs text-slate-400 text-center">出走馬未登録。「週末レース出走馬登録」を実行してください</p>
+                  ) : (
                     <>
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-[10px] text-slate-400 leading-relaxed">
-                          結果を入力するとアルゴリズムが自動改善します
-                        </p>
-                        <button
-                          onClick={() => handleFetchResult(selectedRace.id)}
-                          disabled={fetchingResult[selectedRace.id] || submittingResult === selectedRace.id}
-                          className="shrink-0 ml-2 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-900/60 border border-indigo-600/40 text-indigo-300 hover:bg-indigo-800/60 transition-all disabled:opacity-50 flex items-center gap-1.5"
-                        >
-                          {fetchingResult[selectedRace.id]
-                            ? <><Spinner size={3} /><span>取得中...</span></>
-                            : <><span>🌐</span><span>ネットから自動取得</span></>}
-                        </button>
-                      </div>
-                      <div className="flex gap-2 mb-2">
-                        <div className="flex-1">
-                          <p className="text-[9px] text-slate-500 mb-1">1着の馬名</p>
-                          <input
-                            type="text"
-                            value={inputs.first}
-                            onChange={(e) =>
-                              setResultInputs((prev) => ({
-                                ...prev,
-                                [selectedRace.id]: { ...(prev[selectedRace.id] ?? { first: '', second: '' }), first: e.target.value },
-                              }))
-                            }
-                            placeholder="例: ドウデュース"
-                            className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none focus:border-teal-400/50"
-                          />
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-[9px] text-slate-500 mb-1">2着の馬名</p>
-                          <input
-                            type="text"
-                            value={inputs.second}
-                            onChange={(e) =>
-                              setResultInputs((prev) => ({
-                                ...prev,
-                                [selectedRace.id]: { ...(prev[selectedRace.id] ?? { first: '', second: '' }), second: e.target.value },
-                              }))
-                            }
-                            placeholder="例: リバティアイランド"
-                            className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none focus:border-teal-400/50"
-                          />
-                        </div>
-                      </div>
-                      {err && <p className="text-[10px] text-red-400 mb-2">{err}</p>}
+                    {/* 一括取得ボタン */}
+                    <div className="pt-3 pb-2">
                       <button
-                        onClick={() => handleSubmitResult(selectedRace.id, inputs.first, inputs.second)}
-                        disabled={!inputs.first.trim() || !inputs.second.trim() || isSubmitting}
-                        className="w-full py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white"
+                        onClick={handleFetchTraining}
+                        disabled={fetchingTraining}
+                        className="w-full py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 bg-[#080c18] border border-cyan-700/50 text-cyan-400 hover:border-cyan-400/70 active:scale-95"
                       >
-                        {isSubmitting ? (
-                          <><Spinner size={3} /><span className="pulse-gold">照合・パターン分析中...</span></>
+                        {fetchingTraining ? (
+                          <>
+                            <Spinner size={3} />
+                            <span>netkeiba から取得中... ({selectedRace.entries.length}頭)</span>
+                          </>
                         ) : (
-                          <><span>📊</span><span>結果を入力してアルゴリズムを改善する</span></>
+                          <>
+                            <span>🌐</span>
+                            <span>netkeiba から上がり3F・脚質を一括取得</span>
+                          </>
                         )}
                       </button>
-                    </>
-                  ) : (
-                    <div className="py-2 text-center">
-                      <p className="text-xs text-slate-400">
-                        レース終了後（{format(new Date(selectedRace.date), 'M月d日(E)', { locale: ja })}以降）に
-                      </p>
-                      <p className="text-xs text-slate-400 mt-0.5">ここに1着・2着を入力するとAIが自動改善します</p>
-                      <p className="text-[10px] text-slate-500 mt-2">
-                        ※ 予想は保存されました。レース後に再度アクセスしてください
-                      </p>
+                      {fetchTrainingMsg && (
+                        <p className={`mt-1.5 text-[10px] text-center ${fetchTrainingMsg.includes('失敗') ? 'text-red-400' : 'text-emerald-400'}`}>
+                          {fetchTrainingMsg}
+                        </p>
+                      )}
+                      <p className="mt-1 text-[9px] text-slate-600 text-center">取得後に手動修正も可能です。脚質は4頭以上で展開予測が有効になります。</p>
                     </div>
+                    <div className="grid grid-cols-[auto_1fr_72px_52px] gap-x-2 px-1 py-1.5 border-t border-[#1e2d4a]">
+                      <span className="text-[9px] text-slate-600"></span>
+                      <span className="text-[9px] text-slate-600"></span>
+                      <span className="text-[9px] text-slate-600 text-right">上がり3F秒</span>
+                      <span className="text-[9px] text-slate-600 text-center">脚質</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {selectedRace.entries.map((entry) => {
+                        const key = entry.horseName
+                        const inputs = horseDetailInputs[key] ?? { lastThreeFurlong: '', runningStyle: '' }
+                        return (
+                          <div key={entry.horseNumber} className="grid grid-cols-[auto_1fr_72px_52px] gap-x-2 items-center">
+                            <span className="text-[10px] text-slate-500 w-6 text-right">{entry.horseNumber}.</span>
+                            <span className="text-xs text-white truncate">{entry.horseName}</span>
+                            {/* 上がり3F */}
+                            <input
+                              type="number"
+                              value={inputs.lastThreeFurlong}
+                              onChange={(e) => setHorseDetailInputs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { lastThreeFurlong: '', runningStyle: '' }), lastThreeFurlong: e.target.value },
+                              }))}
+                              placeholder="33.5"
+                              step="0.1"
+                              min={30}
+                              max={42}
+                              className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
+                            />
+                            {/* 脚質 */}
+                            <select
+                              value={inputs.runningStyle}
+                              onChange={(e) => setHorseDetailInputs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { lastThreeFurlong: '', runningStyle: '' }), runningStyle: e.target.value },
+                              }))}
+                              className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-1 py-1 text-xs text-white text-center focus:outline-none focus:border-yellow-400/50"
+                            >
+                              <option value="">-</option>
+                              <option value="逃">逃</option>
+                              <option value="先">先</option>
+                              <option value="差">差</option>
+                              <option value="追">追</option>
+                            </select>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {Object.values(horseDetailInputs).some((v) => v.lastThreeFurlong || v.runningStyle) && (
+                      <button
+                        onClick={() => setHorseDetailInputs({})}
+                        className="mt-3 text-[10px] text-slate-500 hover:text-red-400 transition-colors"
+                      >
+                        入力クリア
+                      </button>
+                    )}
+                    </>
                   )}
                 </div>
-              )
-            })()}
+              )}
+            </div>
 
-            <p className="text-center text-[10px] text-slate-600 mt-6">
-              ※ 本予想はAIによる分析であり、馬券の的中を保証するものではありません。
-              馬券は自己責任でお楽しみください。
-            </p>
-          </div>
-        )}
+            {/* 天気・馬場状態カード */}
+            <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>🌤️</span>
+                  <span>当日天気・馬場状態</span>
+                </span>
+                {fetchingWeather && <span className="text-[10px] text-slate-400">取得中...</span>}
+              </div>
+              {weatherData && !fetchingWeather && (
+                <div className="flex items-center gap-3 mb-3 text-sm">
+                  <span className="text-2xl">{weatherData.icon}</span>
+                  <div>
+                    <span className="text-white font-bold">{weatherData.weather}</span>
+                    <span className="text-slate-400 ml-2">{weatherData.temperature}°C</span>
+                    {weatherData.precipMm > 0 && (
+                      <span className="text-slate-400 ml-2">降水{weatherData.precipMm.toFixed(1)}mm</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {!weatherData && !fetchingWeather && (
+                <p className="text-xs text-slate-500 mb-3">天気データを取得できませんでした</p>
+              )}
+              <div>
+                <p className="text-[10px] text-slate-500 mb-1.5">馬場状態を選択</p>
+                <div className="flex gap-2">
+                  {(['良', '稍重', '重', '不良'] as const).map((cond) => (
+                    <button
+                      key={cond}
+                      onClick={() => setTrackCondition(cond)}
+                      className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        trackCondition === cond
+                          ? 'bg-yellow-400 text-black'
+                          : 'bg-[#080c18] border border-[#1e2d4a] text-slate-400 hover:border-yellow-400/50'
+                      }`}
+                    >
+                      {cond}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
 
-        {/* 初期状態 */}
-        {!loadingRaces && races.length > 0 && !selectedRace && predictions.length === 0 && (
-          <div className="text-center py-8">
-            <p className="text-4xl mb-3">☝️</p>
-            <p className="text-slate-400 text-sm">上からレースを選んで「予想する」を押してください</p>
-          </div>
+            {/* 予想ボタン */}
+            <div className="sticky bottom-safe mb-4">
+              <button
+                onClick={handlePredict}
+                disabled={predicting}
+                className="w-full py-4 rounded-2xl font-black text-base tracking-wide transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed shadow-xl bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 text-black active:scale-95"
+                style={{ boxShadow: '0 4px 24px rgba(245, 197, 24, 0.35)' }}
+              >
+                {predicting ? (
+                  <>
+                    <Spinner size={5} />
+                    <span>AIが予測中... (30-60秒)</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🔮</span>
+                    <span>{selectedRace.name} を予想する</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* 予測エラー */}
+            {predictError && (
+              <div className="mb-4 p-3 bg-red-900/30 border border-red-800/50 rounded-2xl">
+                <p className="text-red-400 text-sm">{predictError}</p>
+              </div>
+            )}
+
+            {/* 予測結果 */}
+            {predictions.length > 0 && (
+              <div className="fade-in">
+                <div className="flex items-center gap-2 mb-3">
+                  <h2 className="text-base font-bold text-white">予想結果</h2>
+                  <span className="text-xs text-slate-500">— 連対率上位5頭</span>
+                  {predictionMode === 'local' && (
+                    <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-900/50 text-emerald-400 border border-emerald-700/50">
+                      🤖 API不要
+                    </span>
+                  )}
+                  {predictionMode === 'ai' && (
+                    <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-400 border border-purple-700/50">
+                      ✨ Claude AI
+                    </span>
+                  )}
+                </div>
+
+                {analysis && (
+                  <div className="mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-yellow-400">🔍</span>
+                      <p className="text-xs font-bold text-yellow-400">レース展望</p>
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">{analysis}</p>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {predictions.map((pred, i) => (
+                    <div
+                      key={i}
+                      className="fade-in bg-[#0f1729] border border-[#1e2d4a] rounded-2xl overflow-hidden"
+                      style={{ animationDelay: `${i * 0.1}s` }}
+                    >
+                      <button
+                        className="w-full text-left p-4"
+                        onClick={() => setExpandedCard(expandedCard === i ? null : i)}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${rankColors[i]} flex items-center justify-center flex-shrink-0`}>
+                            <span className="text-black font-black text-sm">{rankLabels[i]}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              {pred.horseNumber && (
+                                <span className="text-xs text-slate-500 font-mono">{pred.horseNumber}番</span>
+                              )}
+                              <span className="text-base font-bold text-white truncate">{pred.horseName}</span>
+                            </div>
+                            <PlaceRateBar rate={pred.placeRate} />
+                          </div>
+                          <span className="text-slate-600 text-xs flex-shrink-0">{expandedCard === i ? '▲' : '▼'}</span>
+                        </div>
+                      </button>
+                      {expandedCard === i && pred.factors && (
+                        <div className="px-4 pb-4 border-t border-[#1e2d4a] pt-3">
+                          <div className="space-y-2">
+                            {pred.factors.reason && (
+                              <div>
+                                <p className="text-[10px] text-yellow-400 font-bold mb-1">総合評価</p>
+                                <p className="text-xs text-slate-300 leading-relaxed">{pred.factors.reason}</p>
+                              </div>
+                            )}
+                            <div className="grid grid-cols-2 gap-2 mt-2">
+                              {pred.factors.recentForm && (
+                                <div className="bg-[#080c18] rounded-xl p-2">
+                                  <p className="text-[9px] text-slate-500 mb-0.5">最近の成績</p>
+                                  <p className="text-[11px] text-slate-300">{pred.factors.recentForm}</p>
+                                </div>
+                              )}
+                              {pred.factors.distanceSuitability && (
+                                <div className="bg-[#080c18] rounded-xl p-2">
+                                  <p className="text-[9px] text-slate-500 mb-0.5">距離適性</p>
+                                  <p className="text-[11px] text-slate-300">{pred.factors.distanceSuitability}</p>
+                                </div>
+                              )}
+                              {pred.factors.courseRecord && (
+                                <div className="bg-[#080c18] rounded-xl p-2">
+                                  <p className="text-[9px] text-slate-500 mb-0.5">コース実績</p>
+                                  <p className="text-[11px] text-slate-300">{pred.factors.courseRecord}</p>
+                                </div>
+                              )}
+                              {pred.factors.jockeyStats && (
+                                <div className="bg-[#080c18] rounded-xl p-2">
+                                  <p className="text-[9px] text-slate-500 mb-0.5">騎手評価</p>
+                                  <p className="text-[11px] text-slate-300">{pred.factors.jockeyStats}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* インライン結果入力 */}
+                {(() => {
+                  const raceDate = new Date(selectedRace.date)
+                  const isRacePast = raceDate <= today
+                  const feedback = resultFeedback[selectedRace.id]
+                  const inputs = resultInputs[selectedRace.id] ?? { first: '', second: '' }
+                  const isSubmitting = submittingResult === selectedRace.id
+                  const err = resultError[selectedRace.id]
+
+                  return (
+                    <div className="mt-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span>📊</span>
+                        <h3 className="text-sm font-bold text-white">予想結果の照合</h3>
+                      </div>
+
+                      {feedback ? (
+                        <div className="fade-in">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className={`text-lg font-black ${feedback.accuracy >= 50 ? 'text-emerald-400' : 'text-orange-400'}`}>
+                              {feedback.accuracy}%
+                            </span>
+                            <span className="text-xs text-slate-400">{feedback.missInfo}</span>
+                          </div>
+                          {feedback.patternAnalysis && (
+                            <div className="bg-[#080c18] rounded-xl p-3 mb-2">
+                              <p className="text-[9px] text-teal-400 font-bold mb-1">📈 パターン分析</p>
+                              <p className="text-[10px] text-slate-300 leading-relaxed">{feedback.patternAnalysis}</p>
+                            </div>
+                          )}
+                          {feedback.algorithmChange && (
+                            <div className="bg-[#080c18] rounded-xl p-3">
+                              <p className="text-[9px] text-yellow-400 font-bold mb-1">🔧 アルゴリズム改善点</p>
+                              <p className="text-[10px] text-slate-300 leading-relaxed">{feedback.algorithmChange}</p>
+                            </div>
+                          )}
+                          {feedback.overallStats && (
+                            <p className="text-[9px] text-slate-600 mt-2 text-right">
+                              累積: {feedback.overallStats.total}レース / 通算{feedback.overallStats.accuracy}%
+                            </p>
+                          )}
+                        </div>
+                      ) : isRacePast ? (
+                        <>
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-[10px] text-slate-400 leading-relaxed">
+                              結果を入力するとアルゴリズムが自動改善します
+                            </p>
+                            <button
+                              onClick={() => handleFetchResult(selectedRace.id)}
+                              disabled={fetchingResult[selectedRace.id] || submittingResult === selectedRace.id}
+                              className="shrink-0 ml-2 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-900/60 border border-indigo-600/40 text-indigo-300 hover:bg-indigo-800/60 transition-all disabled:opacity-50 flex items-center gap-1.5"
+                            >
+                              {fetchingResult[selectedRace.id]
+                                ? <><Spinner size={3} /><span>取得中...</span></>
+                                : <><span>🌐</span><span>ネットから自動取得</span></>}
+                            </button>
+                          </div>
+                          <div className="flex gap-2 mb-2">
+                            <div className="flex-1">
+                              <p className="text-[9px] text-slate-500 mb-1">1着の馬名</p>
+                              <input
+                                type="text"
+                                value={inputs.first}
+                                onChange={(e) =>
+                                  setResultInputs((prev) => ({
+                                    ...prev,
+                                    [selectedRace.id]: { ...(prev[selectedRace.id] ?? { first: '', second: '' }), first: e.target.value },
+                                  }))
+                                }
+                                placeholder="例: ドウデュース"
+                                className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none focus:border-teal-400/50"
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-[9px] text-slate-500 mb-1">2着の馬名</p>
+                              <input
+                                type="text"
+                                value={inputs.second}
+                                onChange={(e) =>
+                                  setResultInputs((prev) => ({
+                                    ...prev,
+                                    [selectedRace.id]: { ...(prev[selectedRace.id] ?? { first: '', second: '' }), second: e.target.value },
+                                  }))
+                                }
+                                placeholder="例: リバティアイランド"
+                                className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none focus:border-teal-400/50"
+                              />
+                            </div>
+                          </div>
+                          {err && <p className="text-[10px] text-red-400 mb-2">{err}</p>}
+                          <button
+                            onClick={() => handleSubmitResult(selectedRace.id, inputs.first, inputs.second)}
+                            disabled={!inputs.first.trim() || !inputs.second.trim() || isSubmitting}
+                            className="w-full py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white"
+                          >
+                            {isSubmitting ? (
+                              <><Spinner size={3} /><span className="pulse-gold">照合・パターン分析中...</span></>
+                            ) : (
+                              <><span>📊</span><span>結果を入力してアルゴリズムを改善する</span></>
+                            )}
+                          </button>
+                        </>
+                      ) : (
+                        <div className="py-2 text-center">
+                          <p className="text-xs text-slate-400">
+                            レース終了後（{format(new Date(selectedRace.date), 'M月d日(E)', { locale: ja })}以降）に
+                          </p>
+                          <p className="text-xs text-slate-400 mt-0.5">ここに1着・2着を入力するとAIが自動改善します</p>
+                          <p className="text-[10px] text-slate-500 mt-2">
+                            ※ 予想は保存されました。レース後に再度アクセスしてください
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
+                <p className="text-center text-[10px] text-slate-600 mt-6">
+                  ※ 本予想はAIによる分析であり、馬券の的中を保証するものではありません。
+                  馬券は自己責任でお楽しみください。
+                </p>
+              </div>
+            )}
+          </>
         )}
       </main>
 

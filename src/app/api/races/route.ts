@@ -1,27 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { startOfDay, endOfDay, addDays, subDays } from 'date-fns'
+import { startOfDay, endOfDay, addDays } from 'date-fns'
 
 export const dynamic = 'force-dynamic'
-
-// 今日を基準に「直近の土日」（土曜〜日曜）の開始日を返す
-// 今日が土: 今日  今日が日: 昨日(土)  月〜金: 次の土曜
-function nearestSaturday(today: Date): Date {
-  const dow = today.getDay() // 0=日, 6=土
-  if (dow === 6) return today
-  if (dow === 0) return subDays(today, 1)
-  return addDays(today, 6 - dow) // 月(1)→+5, 火(2)→+4 ... 金(5)→+1
-}
 
 export async function GET() {
   try {
     const today = new Date()
-    const saturday = startOfDay(nearestSaturday(today))
-    const sunday = endOfDay(addDays(saturday, 1))
+    const dow = today.getDay() // 0=日, 6=土
+
+    let dayStart: Date
+    let dayEnd: Date
+
+    if (dow === 6 || dow === 0) {
+      // 土曜・日曜: 当日のみ
+      dayStart = startOfDay(today)
+      dayEnd = endOfDay(today)
+    } else {
+      // 平日: 次の土日両日
+      const saturday = addDays(today, 6 - dow)
+      dayStart = startOfDay(saturday)
+      dayEnd = endOfDay(addDays(saturday, 1))
+    }
 
     const races = await prisma.race.findMany({
       where: {
-        date: { gte: saturday, lte: sunday },
+        date: { gte: dayStart, lte: dayEnd },
         grade: { in: ['G1', 'G2'] },
       },
       include: {
@@ -32,7 +36,7 @@ export async function GET() {
 
     return NextResponse.json({
       races,
-      targetDate: saturday.toISOString(),
+      targetDate: dayStart.toISOString(),
     })
   } catch (error) {
     console.error('Races API error:', error)

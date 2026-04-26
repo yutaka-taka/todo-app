@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { generatePrediction } from '@/lib/ai'
 import { localScoreHorses } from '@/lib/scorer'
 import { getLocalWeights } from '@/lib/localAutoLearn'
+import { findNetkeibaRaceId, fetchOddsRanking } from '@/lib/netkeibaRaceId'
 import { format } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
@@ -52,6 +53,21 @@ export async function POST(request: NextRequest) {
     })
     const isLocalModeReady = horseStatCount >= LOCAL_MODE_THRESHOLD
 
+    // オッズ取得（データ不足馬補正用・失敗しても予想は続行）
+    let oddsRanking: Record<number, number> = {}
+    try {
+      const netkeibaRaceId = await findNetkeibaRaceId(race.venue, new Date(race.date))
+      if (netkeibaRaceId) {
+        oddsRanking = await fetchOddsRanking(netkeibaRaceId)
+      }
+    } catch { /* オッズ取得失敗は無視 */ }
+
+    // オッズ情報をエントリにマージ（馬番で紐付け）
+    const entriesWithOdds = weightedEntries.map((e) => ({
+      ...e,
+      oddsPopularity: oddsRanking[e.horseNumber] ?? null,
+    }))
+
     let predictions
     let analysis = ''
     let mode: 'local' | 'ai' = 'ai'
@@ -59,13 +75,13 @@ export async function POST(request: NextRequest) {
     // ローカル予想: 馬データが十分 AND 出走馬が確定している場合
     if (isLocalModeReady && hasEntries) {
       mode = 'local'
-      const horseNames = weightedEntries.map((e) => e.horseName)
+      const horseNames = entriesWithOdds.map((e) => e.horseName)
       const [stats, weights] = await Promise.all([
         prisma.horseStat.findMany({ where: { horseName: { in: horseNames } } }),
         getLocalWeights(),
       ])
       const raceWithCond = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
-      const scored = localScoreHorses(weightedEntries, raceWithCond, stats, weights)
+      const scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights)
       predictions = scored
       const coveredCount = stats.length
       analysis = `【ローカル予想モード】蓄積済み馬データ${horseStatCount}頭を使用（Claude API不要）。出走${race.entries.length}頭中${coveredCount}頭のデータがDBに存在します。残り${race.entries.length - coveredCount}頭は平均値で推定。レース結果を入力するたびに自動学習し精度が向上します。`
@@ -101,11 +117,11 @@ export async function POST(request: NextRequest) {
         console.warn('AI prediction failed, falling back to local:', aiError)
         mode = 'local'
         const stats = hasEntries
-          ? await prisma.horseStat.findMany({ where: { horseName: { in: weightedEntries.map((e) => e.horseName) } } })
+          ? await prisma.horseStat.findMany({ where: { horseName: { in: entriesWithOdds.map((e) => e.horseName) } } })
           : []
         const fallbackRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
         const scored = localScoreHorses(
-          hasEntries ? weightedEntries : [],
+          hasEntries ? entriesWithOdds : [],
           fallbackRace,
           stats
         )
@@ -116,10 +132,10 @@ export async function POST(request: NextRequest) {
       // APIキーなし → ローカルモードで試みる
       mode = 'local'
       const stats = hasEntries
-        ? await prisma.horseStat.findMany({ where: { horseName: { in: weightedEntries.map((e) => e.horseName) } } })
+        ? await prisma.horseStat.findMany({ where: { horseName: { in: entriesWithOdds.map((e) => e.horseName) } } })
         : []
       const noKeyRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
-      const scored = localScoreHorses(hasEntries ? weightedEntries : [], noKeyRace, stats)
+      const scored = localScoreHorses(hasEntries ? entriesWithOdds : [], noKeyRace, stats)
       predictions = scored
       if (horseStatCount < LOCAL_MODE_THRESHOLD) {
         analysis = `【学習中】現在${horseStatCount}頭分のデータが蓄積されています（目標: ${LOCAL_MODE_THRESHOLD}頭）。「自己学習」ボタンを押して学習を進めることで予測精度が向上します。`

@@ -49,6 +49,7 @@ interface EntryInput {
   trainer?: string | null           // 調教師
   lastThreeFurlong?: number | null  // 前走上がり3F（秒）
   runningStyle?: string | null      // 脚質: 逃/先/差/追
+  oddsPopularity?: number | null    // 単勝人気順位（データ不足馬補正用）
 }
 
 interface RaceContext {
@@ -428,6 +429,11 @@ function buildScore(
     // 前走上がり3F（データなし時も反映）
     const ltfBonusRaw = getLastThreeFurlongBonus(entry.lastThreeFurlong, race.surface)
     partialBonus += Math.round(ltfBonusRaw * 0.5)
+    // 人気補正（データ皆無馬のみ・オッズ確定時）
+    if (entry.oddsPopularity != null) {
+      if (entry.oddsPopularity <= 3)      { partialBonus += 6; notes.push(`${entry.oddsPopularity}番人気`) }
+      else if (entry.oddsPopularity <= 6) { partialBonus += 2 }
+    }
     return {
       rank: 0,
       horseNumber: entry.horseNumber,
@@ -779,13 +785,20 @@ function buildScore(
   const cappedBase = Math.min(effectiveBase, 60)
   // G1経験2戦以上の馬は最低スコアを底上げ（掲示板常連馬の過小評価防止）
   const minFloor = (race.grade === 'G1' && stat.g1Races >= 2) ? 24 : 20
-  const finalRate  = Math.max(minFloor, cappedBase + totalBonus)
+  // データ少数馬（3戦以下）への人気補正（オッズ確定時のみ・小幅）
+  let oddsAdj = 0
+  if (stat.totalRaces <= 3 && entry.oddsPopularity != null) {
+    if (entry.oddsPopularity <= 3)      oddsAdj = 6
+    else if (entry.oddsPopularity <= 6) oddsAdj = 2
+  }
+  const finalRate  = Math.max(minFloor, cappedBase + totalBonus + oddsAdj)
 
   const reason = [
     `ベース連対率${(baseSmoothed * 100).toFixed(0)}%(${stat.totalRaces}戦)`,
     g1Note, ageNote, jockeyNote, trainerNote, weightNote,
     entry.lastThreeFurlong ? `上がり3F:${entry.lastThreeFurlong}秒` : '',
     entry.runningStyle && paceType !== 'medium' ? `${entry.runningStyle}/${paceType === 'high' ? 'ハイペース' : 'スロー'}展開` : '',
+    (oddsAdj > 0 && entry.oddsPopularity != null) ? `${entry.oddsPopularity}番人気(少数戦補正)` : '',
   ].filter(Boolean).join('、')
 
   return {

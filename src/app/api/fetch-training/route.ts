@@ -14,31 +14,92 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+// 馬名をEUC-JP percent-encode（JRA馬名はカタカナのみが前提）
+function encodeEucJp(name: string): string {
+  let result = ''
+  for (const char of name) {
+    const cp = char.codePointAt(0)!
+    if (cp < 0x80) {
+      result += encodeURIComponent(char)
+    } else if (cp >= 0x30A1 && cp <= 0x30F6) {
+      // 全角カタカナ ァ(U+30A1)-ヶ(U+30F6) → EUC-JP 0xA5 + (cp - 0x3000)
+      const b2 = cp - 0x3000
+      result += `%A5%${b2.toString(16).toUpperCase().padStart(2, '0')}`
+    } else if (cp === 0x30FC) {
+      // ー (長音符) → EUC-JP A1 BC
+      result += '%A1%BC'
+    } else if (cp === 0x30FB) {
+      // ・ (中点) → EUC-JP A1 A5
+      result += '%A1%A5'
+    } else if (cp >= 0x3041 && cp <= 0x3096) {
+      // ひらがな ぁ(U+3041)-ゖ(U+3096) → EUC-JP 0xA4 + (cp - 0x3041 + 0xA1)
+      const b2 = cp - 0x3041 + 0xA1
+      result += `%A4%${b2.toString(16).toUpperCase().padStart(2, '0')}`
+    } else {
+      // その他（漢字など）: UTF-8 fallback
+      result += encodeURIComponent(char)
+    }
+  }
+  return result
+}
+
 // netkeiba で馬名検索 → horse_id を返す
+// 新URL: /horse/list.html?word={EUC-JP}
+// 1件ヒット時は302リダイレクト /horse/{id}/ で直接IDが取れる
 async function findHorseId(horseName: string): Promise<string | null> {
   try {
-    const encoded = encodeURIComponent(horseName)
-    const res = await fetch(`https://db.netkeiba.com/?pid=horse_list&word=${encoded}`, { headers: HEADERS })
-    if (!res.ok) return null
-    const html = await res.text()
-    const match = html.match(/href="\/horse\/(\d{10,12})\/?"/)
-    return match ? match[1] : null
+    const encoded = encodeEucJp(horseName)
+    const url = `https://db.netkeiba.com/horse/list.html?word=${encoded}`
+
+    // redirect: 'manual' で302をキャッチ（followすると Location ヘッダが消える）
+    const res = await fetch(url, { headers: HEADERS, redirect: 'manual' })
+
+    if (res.status === 301 || res.status === 302) {
+      // 1件ヒット → Location: /horse/{id}/
+      const location = res.headers.get('location') ?? ''
+      const m = location.match(/\/horse\/(\d{8,12})\/?/)
+      return m ? m[1] : null
+    }
+
+    if (res.status === 200) {
+      // 複数ヒット → HTML内の /horse/{id}/ リンクを探す
+      const buffer = await res.arrayBuffer()
+      let html: string
+      try {
+        html = new TextDecoder('euc-jp').decode(buffer)
+      } catch {
+        html = new TextDecoder('utf-8', { fatal: false }).decode(buffer)
+      }
+      const m = html.match(/\/horse\/(\d{8,12})\//)
+      return m ? m[1] : null
+    }
+
+    return null
   } catch {
     return null
   }
 }
 
-// 馬の戦績ページから直近レースの上がり3F・通過順を取得
+// 戦績をAJAXエンドポイント(JSON)から取得
+// 旧: 静的HTML /horse/{id}/ → db_h_race_resultsテーブルが動的ロードに変更
+// 新: /horse/ajax_horse_results.html?input=UTF-8&output=json&id={id}
 async function fetchHorseRaceStats(horseId: string): Promise<{
   lastThreeFurlong: number | null
   frontPositions: number[]
 }> {
   try {
-    const res = await fetch(`https://db.netkeiba.com/horse/${horseId}/`, { headers: HEADERS })
+    const res = await fetch(
+      `https://db.netkeiba.com/horse/ajax_horse_results.html?input=UTF-8&output=json&id=${horseId}`,
+      { headers: HEADERS },
+    )
     if (!res.ok) return { lastThreeFurlong: null, frontPositions: [] }
-    const html = await res.text()
 
-    // 戦績テーブルを抽出
+    const json = await res.json() as { status: string; data?: string }
+    if (json.status !== 'OK' || !json.data) return { lastThreeFurlong: null, frontPositions: [] }
+
+    const html = json.data
+
+    // db_h_race_results テーブルを抽出（クラス名は変わらず存在）
     const tableMatch = html.match(/<table[^>]*class="[^"]*db_h_race_results[^"]*"[^>]*>([\s\S]*?)<\/table>/i)
     if (!tableMatch) return { lastThreeFurlong: null, frontPositions: [] }
 
@@ -47,7 +108,6 @@ async function fetchHorseRaceStats(horseId: string): Promise<{
     const frontPositions: number[] = []
 
     for (const row of rows) {
-      // 各セルのテキストを取得
       const tds = Array.from(row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi))
       if (tds.length < 8) continue
       const texts = tds.map((td) => td[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
@@ -67,18 +127,19 @@ async function fetchHorseRaceStats(horseId: string): Promise<{
       }
 
       // 通過順位 を探す: "3-3-4-4" や "1-1-1" のような形式
-      for (const text of texts) {
-        const m = text.match(/^(\d{1,2})-(\d{1,2})/)
-        if (m) {
-          const pos = parseInt(m[1])
-          if (pos >= 1 && pos <= 18) {
-            frontPositions.push(pos)
+      if (frontPositions.length < 5) {
+        for (const text of texts) {
+          const m = text.match(/^(\d{1,2})-(\d{1,2})/)
+          if (m) {
+            const pos = parseInt(m[1])
+            if (pos >= 1 && pos <= 18) {
+              frontPositions.push(pos)
+            }
+            break
           }
-          break
         }
       }
 
-      // 直近5レース分取得したら終了
       if (lastThreeFurlong !== null && frontPositions.length >= 5) break
     }
 
@@ -145,7 +206,6 @@ export async function POST(request: NextRequest) {
       batch.forEach((entry, idx) => {
         results[entry.horseName] = batchResults[idx]
       })
-      // バッチ間に500ms待機
       if (i + BATCH < entries.length) await delay(500)
     }
 
