@@ -100,6 +100,19 @@ interface HorseStatRow {
   lastRaceDate: string | null
 }
 
+interface HistoryRace {
+  id: string
+  name: string
+  date: string
+  venue: string
+  grade: string
+  surface: string
+  distance: number
+  analyzed: boolean
+  entryCount: number
+  resultCount: number
+}
+
 interface PredictedRaceForInput {
   id: string
   name: string
@@ -265,6 +278,41 @@ export default function Home() {
   const [deleteAllConfirmStep, setDeleteAllConfirmStep] = useState<0 | 1 | 2>(0)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // 引退馬整理
+  const [retiredHorses, setRetiredHorses] = useState<HorseStatRow[]>([])
+  const [loadingRetired, setLoadingRetired] = useState(false)
+  const [selectedRetired, setSelectedRetired] = useState<Set<string>>(new Set())
+  const [retiredConfirmStep, setRetiredConfirmStep] = useState<0 | 1>(0)
+  const [deletingRetired, setDeletingRetired] = useState(false)
+  const [retiredError, setRetiredError] = useState<string | null>(null)
+  const [showRetiredSection, setShowRetiredSection] = useState(false)
+  const [retiredDeleteResult, setRetiredDeleteResult] = useState<{ deleted: number; message: string } | null>(null)
+
+  // 全期間G1/G2レース
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false)
+  const [historyRaces, setHistoryRaces] = useState<HistoryRace[]>([])
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyHasMore, setHistoryHasMore] = useState(false)
+  const [historyGradeFilter, setHistoryGradeFilter] = useState<'all' | 'G1' | 'G2'>('all')
+  const [historyYearFilter, setHistoryYearFilter] = useState<number>(0)
+  const [historyYears, setHistoryYears] = useState<number[]>([])
+  const [historyStats, setHistoryStats] = useState<{ g1: number; g2: number; total: number } | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+
+  // 過去レース収集
+  const [historyYearFrom, setHistoryYearFrom] = useState(2020)
+  const [historyYearTo, setHistoryYearTo] = useState(2024)
+  const [fetchingHistory, setFetchingHistory] = useState(false)
+  const [historyResult, setHistoryResult] = useState<{ processed: number; updated: number; message: string } | null>(null)
+  const [fetchHistoryError, setFetchHistoryError] = useState<string | null>(null)
+
+  // 血統取得
+  const [fetchingPedigree, setFetchingPedigree] = useState(false)
+  const [pedigreeResult, setPedigreeResult] = useState<{ updated: number; message: string } | null>(null)
+  const [pedigreeError, setPedigreeError] = useState<string | null>(null)
+
   const fetchRaces = useCallback(async () => {
     setLoadingRaces(true)
     setRaceError(null)
@@ -421,6 +469,10 @@ export default function Home() {
     if (showLearnPanel) fetchRacesForResult()
   }, [showLearnPanel, fetchRacesForResult])
 
+  useEffect(() => {
+    if (showHistoryPanel) fetchHistoryRaces(historyGradeFilter, historyYearFilter, 1)
+  }, [showHistoryPanel]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleHorseSearchChange = (value: string) => {
     setHorseSearch(value)
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -470,6 +522,70 @@ export default function Home() {
       setHorseLoading(false)
     }
   }
+
+  const fetchRetiredHorses = async () => {
+    setLoadingRetired(true)
+    setRetiredError(null)
+    setRetiredDeleteResult(null)
+    try {
+      const res = await fetch('/api/horses/retired')
+      if (!res.ok) throw new Error('取得失敗')
+      const data = await res.json()
+      setRetiredHorses(data.horses ?? [])
+      setSelectedRetired(new Set())
+    } catch (e) {
+      setRetiredError(e instanceof Error ? e.message : 'エラーが発生しました')
+    } finally {
+      setLoadingRetired(false)
+    }
+  }
+
+  const handleDeleteRetired = async () => {
+    if (selectedRetired.size === 0) return
+    setDeletingRetired(true)
+    setRetiredError(null)
+    try {
+      const res = await fetch('/api/horses/retired', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ names: Array.from(selectedRetired) }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? '削除失敗')
+      setRetiredDeleteResult(data)
+      setRetiredHorses((prev) => prev.filter((h) => !selectedRetired.has(h.horseName)))
+      setSelectedRetired(new Set())
+      setRetiredConfirmStep(0)
+      setHorsesTotal((prev) => prev - (data.deleted ?? 0))
+      await fetchLearnStatus()
+    } catch (e) {
+      setRetiredError(e instanceof Error ? e.message : '削除に失敗しました')
+    } finally {
+      setDeletingRetired(false)
+    }
+  }
+
+  const fetchHistoryRaces = useCallback(async (grade: string, year: number, page: number, append = false) => {
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const params = new URLSearchParams({ grade, page: String(page) })
+      if (year > 0) params.set('year', String(year))
+      const res = await fetch(`/api/race-history?${params}`)
+      if (!res.ok) throw new Error('取得失敗')
+      const data = await res.json()
+      setHistoryRaces((prev) => append ? [...prev, ...data.races] : data.races)
+      setHistoryTotal(data.total)
+      setHistoryHasMore(data.hasMore)
+      setHistoryPage(page)
+      if (data.years?.length) setHistoryYears(data.years)
+      if (data.stats) setHistoryStats(data.stats)
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : 'エラーが発生しました')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [])
 
   const handleSelectRace = (race: Race) => {
     setSelectedRace(race)
@@ -781,28 +897,39 @@ export default function Home() {
             </h1>
             <p className="text-[10px] text-slate-500">Claude AI 連対率予測</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <button
-              onClick={() => { setShowHorsesPanel(!showHorsesPanel); setShowLearnPanel(false) }}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all ${
+              onClick={() => { setShowHorsesPanel(!showHorsesPanel); setShowLearnPanel(false); setShowHistoryPanel(false) }}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border transition-all ${
                 showHorsesPanel
                   ? 'border-blue-400/70 text-blue-400 bg-blue-900/20'
                   : 'border-[#1e2d4a] text-slate-400 hover:border-blue-400/50 hover:text-blue-400'
               }`}
             >
               <span>🐴</span>
-              <span>馬一覧</span>
+              <span>馬</span>
             </button>
             <button
-              onClick={() => { setShowLearnPanel(!showLearnPanel); setShowHorsesPanel(false) }}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all ${
+              onClick={() => { setShowHistoryPanel(!showHistoryPanel); setShowHorsesPanel(false); setShowLearnPanel(false) }}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                showHistoryPanel
+                  ? 'border-emerald-400/70 text-emerald-400 bg-emerald-900/20'
+                  : 'border-[#1e2d4a] text-slate-400 hover:border-emerald-400/50 hover:text-emerald-400'
+              }`}
+            >
+              <span>📚</span>
+              <span>全期間</span>
+            </button>
+            <button
+              onClick={() => { setShowLearnPanel(!showLearnPanel); setShowHorsesPanel(false); setShowHistoryPanel(false) }}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border transition-all ${
                 showLearnPanel
                   ? 'border-purple-400/70 text-purple-400 bg-purple-900/20'
                   : 'border-[#1e2d4a] text-slate-400 hover:border-yellow-400/50 hover:text-yellow-400'
               }`}
             >
               <span>🧠</span>
-              <span>自己学習</span>
+              <span>学習</span>
             </button>
           </div>
         </div>
@@ -975,6 +1102,308 @@ export default function Home() {
                 <p className="text-[9px] text-slate-600 text-center mt-2">
                   {horsesTotal}頭中 {horses.length}頭を表示
                 </p>
+              </>
+            )}
+
+            {/* 引退馬整理セクション */}
+            <div className="mt-4 border-t border-[#1e2d4a] pt-3">
+              <button
+                onClick={() => {
+                  setShowRetiredSection(!showRetiredSection)
+                  if (!showRetiredSection && retiredHorses.length === 0) fetchRetiredHorses()
+                }}
+                className="w-full flex items-center justify-between py-1.5"
+              >
+                <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                  <span>🔴</span>
+                  <span>引退馬データ整理（12ヶ月以上出走なし）</span>
+                </span>
+                <span className="text-slate-500 text-xs">{showRetiredSection ? '▲' : '▼'}</span>
+              </button>
+
+              {showRetiredSection && (
+                <div className="mt-2 fade-in">
+                  <p className="text-[10px] text-slate-500 mb-2 leading-relaxed">
+                    12ヶ月以上レースに出走していない引退候補馬の一覧です。不要なデータを削除してDB容量を最適化できます。
+                  </p>
+
+                  <button
+                    onClick={fetchRetiredHorses}
+                    disabled={loadingRetired}
+                    className="w-full py-2 mb-2 rounded-xl text-xs font-bold border border-amber-700/50 text-amber-400 hover:bg-amber-900/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {loadingRetired ? (
+                      <><Spinner size={3} /><span>取得中...</span></>
+                    ) : (
+                      <><span>🔍</span><span>引退候補馬を検索</span></>
+                    )}
+                  </button>
+
+                  {retiredError && (
+                    <p className="text-[10px] text-red-400 mb-2">{retiredError}</p>
+                  )}
+
+                  {retiredDeleteResult && (
+                    <div className="mb-2 p-2 bg-amber-900/20 border border-amber-700/30 rounded-xl text-xs text-amber-400">
+                      ✓ {retiredDeleteResult.message}
+                    </div>
+                  )}
+
+                  {retiredHorses.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] text-slate-400">{retiredHorses.length}頭が引退候補</span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setSelectedRetired(new Set(retiredHorses.map((h) => h.horseName)))}
+                            className="text-[9px] text-blue-400 hover:text-blue-300"
+                          >すべて選択</button>
+                          <button
+                            onClick={() => setSelectedRetired(new Set())}
+                            className="text-[9px] text-slate-500 hover:text-slate-300"
+                          >解除</button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 max-h-56 overflow-y-auto mb-2">
+                        {retiredHorses.map((horse) => {
+                          const isSelected = selectedRetired.has(horse.horseName)
+                          const lastDate = horse.lastRaceDate
+                            ? new Date(horse.lastRaceDate).toLocaleDateString('ja-JP', { year: 'numeric', month: 'numeric' })
+                            : '不明'
+                          return (
+                            <label
+                              key={horse.horseName}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
+                                isSelected ? 'bg-amber-900/20 border border-amber-700/40' : 'bg-[#080c18] border border-transparent'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  setSelectedRetired((prev) => {
+                                    const next = new Set(prev)
+                                    e.target.checked ? next.add(horse.horseName) : next.delete(horse.horseName)
+                                    return next
+                                  })
+                                }}
+                                className="accent-amber-400"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs text-white truncate">{horse.horseName}</p>
+                                <p className="text-[9px] text-slate-500">
+                                  最終: {lastDate}
+                                  {horse.g1Races > 0 && ` / G1: ${horse.g1Races}戦`}
+                                  {` / 通算: ${horse.totalRaces}戦`}
+                                </p>
+                              </div>
+                            </label>
+                          )
+                        })}
+                      </div>
+
+                      {selectedRetired.size > 0 && (
+                        <button
+                          onClick={() => setRetiredConfirmStep(1)}
+                          className="w-full py-2 rounded-xl text-xs font-bold bg-amber-700/80 hover:bg-amber-600 text-white transition-all"
+                        >
+                          選択した {selectedRetired.size}頭のデータを削除
+                        </button>
+                      )}
+                    </>
+                  )}
+
+                  {retiredHorses.length === 0 && !loadingRetired && (
+                    <p className="text-xs text-slate-500 text-center py-2">
+                      引退候補馬は見つかりませんでした
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 引退馬削除 確認ダイアログ */}
+            {retiredConfirmStep === 1 && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+                <div className="bg-[#0d1829] border border-amber-800/60 rounded-2xl p-6 w-80 shadow-2xl max-h-[80dvh] overflow-y-auto">
+                  <p className="text-amber-400 font-bold text-sm mb-2 text-center">🔴 削除確認</p>
+                  <p className="text-xs text-slate-300 text-center mb-3">
+                    以下 {selectedRetired.size}頭のデータを削除します
+                  </p>
+                  <div className="mb-4 max-h-40 overflow-y-auto space-y-1 bg-[#080c18] rounded-xl p-2">
+                    {Array.from(selectedRetired).map((name) => (
+                      <p key={name} className="text-[10px] text-amber-300 px-1">• {name}</p>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-500 text-center mb-4">この操作は元に戻せません</p>
+                  <div className="flex gap-3">
+                    <button
+                      autoFocus
+                      onClick={() => setRetiredConfirmStep(0)}
+                      className="flex-1 py-2 rounded-xl text-sm border border-[#1e2d4a] text-slate-300 hover:bg-[#1a2640] transition-all"
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      onClick={handleDeleteRetired}
+                      disabled={deletingRetired}
+                      className="flex-1 py-2 rounded-xl text-sm font-bold bg-amber-700 hover:bg-amber-600 text-white transition-all disabled:opacity-50"
+                    >
+                      {deletingRetired ? '削除中...' : '削除する'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== 全期間G1/G2レース一覧パネル ===== */}
+        {showHistoryPanel && (
+          <div className="fade-in mb-4 bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <span>📚</span>
+                <span>全期間G1/G2レース</span>
+              </h2>
+              {historyStats && (
+                <span className="text-[10px] text-slate-500">
+                  G1: {historyStats.g1}件 / G2: {historyStats.g2}件
+                </span>
+              )}
+            </div>
+
+            {/* フィルター */}
+            <div className="flex gap-2 mb-3">
+              <div className="flex gap-1">
+                {(['all', 'G1', 'G2'] as const).map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => {
+                      setHistoryGradeFilter(g)
+                      fetchHistoryRaces(g, historyYearFilter, 1)
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+                      historyGradeFilter === g
+                        ? g === 'G1' ? 'bg-yellow-400 text-black'
+                          : g === 'G2' ? 'bg-slate-300 text-black'
+                          : 'bg-blue-600 text-white'
+                        : 'bg-[#080c18] border border-[#1e2d4a] text-slate-400'
+                    }`}
+                  >
+                    {g === 'all' ? '全' : g}
+                  </button>
+                ))}
+              </div>
+              <select
+                value={historyYearFilter || ''}
+                onChange={(e) => {
+                  const y = parseInt(e.target.value) || 0
+                  setHistoryYearFilter(y)
+                  fetchHistoryRaces(historyGradeFilter, y, 1)
+                }}
+                className="flex-1 bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-[10px] text-white focus:outline-none"
+              >
+                <option value="">全年</option>
+                {historyYears.map((y) => (
+                  <option key={y} value={y}>{y}年</option>
+                ))}
+              </select>
+            </div>
+
+            {historyError && (
+              <div className="mb-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
+                {historyError}
+              </div>
+            )}
+
+            {historyLoading && historyRaces.length === 0 ? (
+              <div className="flex justify-center py-6"><Spinner size={6} /></div>
+            ) : historyRaces.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-4">
+                レースデータがありません。「過去レース収集」で収集してください。
+              </p>
+            ) : (
+              <>
+                {/* レース一覧 */}
+                <div className="space-y-1.5 max-h-[60dvh] overflow-y-auto">
+                  {historyRaces.map((race) => (
+                    <div
+                      key={race.id}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-all ${
+                        race.entryCount > 0
+                          ? 'cursor-pointer hover:border-emerald-500/40 border-[#1a2640] bg-[#080c18]'
+                          : 'border-[#141e30] bg-[#080c18]/50 opacity-60'
+                      }`}
+                      onClick={async () => {
+                        if (race.entryCount === 0) return
+                        setShowHistoryPanel(false)
+                        try {
+                          const res = await fetch(`/api/races/${race.id}`)
+                          const data = await res.json()
+                          if (data.race) {
+                            handleSelectRace({
+                              ...data.race,
+                              date: new Date(data.race.date).toISOString(),
+                            })
+                          }
+                        } catch {
+                          const raceObj: Race = {
+                            id: race.id, name: race.name,
+                            date: race.date + 'T00:00:00.000Z',
+                            venue: race.venue, grade: race.grade,
+                            surface: race.surface, distance: race.distance,
+                            entries: [],
+                          }
+                          handleSelectRace(raceObj)
+                        }
+                      }}
+                    >
+                      <span className={`shrink-0 px-1.5 py-0.5 text-[9px] font-black rounded-full ${
+                        race.grade === 'G1' ? 'bg-yellow-400 text-black' : 'bg-slate-300 text-black'
+                      }`}>
+                        {race.grade}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-white truncate">{race.name}</p>
+                        <p className="text-[9px] text-slate-500">
+                          {race.date} {race.venue} {race.surface}{race.distance}m
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {race.entryCount > 0 ? (
+                          <span className="text-[9px] text-emerald-400">{race.entryCount}頭▶</span>
+                        ) : race.resultCount > 0 ? (
+                          <span className="text-[9px] text-slate-500">結果{race.resultCount}</span>
+                        ) : (
+                          <span className="text-[9px] text-slate-600">データなし</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ページネーション */}
+                <div className="mt-2 flex items-center justify-between">
+                  <p className="text-[9px] text-slate-600">{historyTotal}件中 {historyRaces.length}件表示</p>
+                  {historyHasMore && (
+                    <button
+                      onClick={() => fetchHistoryRaces(historyGradeFilter, historyYearFilter, historyPage + 1, true)}
+                      disabled={historyLoading}
+                      className="px-3 py-1 text-[10px] text-emerald-400 border border-emerald-700/40 rounded-lg hover:bg-emerald-900/20 transition-all disabled:opacity-50"
+                    >
+                      {historyLoading ? '読込中...' : 'もっと見る'}
+                    </button>
+                  )}
+                </div>
+
+                <div className="mt-3 p-2.5 bg-[#080c18] rounded-xl">
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    🟢 出走馬登録済みのレースをタップすると予想画面へ移動します。<br />
+                    過去レースへの出走馬登録は「週末レース出走馬登録」で随時追加できます。
+                  </p>
+                </div>
               </>
             )}
           </div>

@@ -114,6 +114,12 @@ model HorseStat {
   lastRaceDate       DateTime?
   lastRacePopularity Int?              // 最終レース人気（叩き良化検出用）
   runningStyle       String?           // 脚質: 逃/先/差/追（展開予測用）
+  sire               String?           // 父
+  dam                String?           // 母
+  sireOfSire         String?           // 父父
+  sireOfDam          String?           // 母父（ブルードメアサイアー）
+  damOfSire          String?           // 父母（父の母）
+  damOfDam           String?           // 母母（母の母）
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 }

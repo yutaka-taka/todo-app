@@ -19,6 +19,8 @@ export interface LocalWeights {
   paceMult: number
   // v336: 市場オッズ連動補正
   oddsMult: number
+  // 血統ボーナス
+  bloodlineMult: number
 }
 
 export const DEFAULT_WEIGHTS: LocalWeights = {
@@ -40,6 +42,8 @@ export const DEFAULT_WEIGHTS: LocalWeights = {
   paceMult:             1.0,
   // オッズは強いシグナル。初期値1.2でやや重視
   oddsMult:             1.2,
+  // 血統: 初期値1.0（自己学習で最適化）
+  bloodlineMult:        1.0,
 }
 
 interface EntryInput {
@@ -95,6 +99,7 @@ export interface ScoredHorse {
       courseFeature: number
       pace: number
       odds: number
+      bloodline: number
     }
   }
 }
@@ -155,6 +160,76 @@ const COURSE_FEATURES: Record<string, CourseFeature> = {
   '札幌': { slope: 'flat',  direction: 'right', straightLength: 266, shape: 'tight' },
   '小倉': { slope: 'flat',  direction: 'right', straightLength: 293, shape: 'tight' },
   '福島': { slope: 'flat',  direction: 'right', straightLength: 292, shape: 'tight' },
+}
+
+// ========== 血統辞典 ==========
+const SIRE_TRAITS: Record<string, { dist: 'short' | 'mile' | 'middle' | 'long' | 'any'; surf: 'turf' | 'dirt' | 'any'; pts: number }> = {
+  'ディープインパクト': { dist: 'long',   surf: 'turf', pts: 4 },
+  'ハーツクライ':       { dist: 'long',   surf: 'turf', pts: 4 },
+  'オルフェーヴル':     { dist: 'long',   surf: 'turf', pts: 3 },
+  'ゴールドシップ':     { dist: 'long',   surf: 'turf', pts: 3 },
+  'キングカメハメハ':   { dist: 'middle', surf: 'any',  pts: 3 },
+  'エピファネイア':     { dist: 'middle', surf: 'turf', pts: 4 },
+  'ドゥラメンテ':       { dist: 'middle', surf: 'turf', pts: 3 },
+  'キタサンブラック':   { dist: 'middle', surf: 'turf', pts: 3 },
+  'ロードカナロア':     { dist: 'mile',   surf: 'turf', pts: 4 },
+  'モーリス':           { dist: 'mile',   surf: 'turf', pts: 3 },
+  'ダイワメジャー':     { dist: 'mile',   surf: 'turf', pts: 2 },
+  'スクリーンヒーロー': { dist: 'middle', surf: 'turf', pts: 2 },
+  'ステイゴールド':     { dist: 'long',   surf: 'turf', pts: 2 },
+  'サクラバクシンオー': { dist: 'short',  surf: 'turf', pts: 3 },
+  'スウェプトオーヴァーボード': { dist: 'short', surf: 'any', pts: 2 },
+  'クロフネ':           { dist: 'middle', surf: 'dirt', pts: 5 },
+  'ゴールドアリュール': { dist: 'middle', surf: 'dirt', pts: 4 },
+  'ヘニーヒューズ':     { dist: 'short',  surf: 'dirt', pts: 4 },
+  'パイロ':             { dist: 'short',  surf: 'dirt', pts: 3 },
+  'カネヒキリ':         { dist: 'middle', surf: 'dirt', pts: 3 },
+  'コパノリッキー':     { dist: 'mile',   surf: 'dirt', pts: 3 },
+}
+
+function getDistGroup(distance: number): 'short' | 'mile' | 'middle' | 'long' {
+  if (distance >= 2400) return 'long'
+  if (distance >= 1700) return 'middle'
+  if (distance >= 1500) return 'mile'
+  return 'short'
+}
+
+function getSireTraitBonus(
+  sireName: string | null | undefined,
+  distGroup: 'short' | 'mile' | 'middle' | 'long',
+  surface: string,
+  weight: number,
+): number {
+  if (!sireName) return 0
+  for (const [name, trait] of Object.entries(SIRE_TRAITS)) {
+    if (sireName.includes(name) || name.includes(sireName)) {
+      const distMatch = trait.dist === 'any' || trait.dist === distGroup
+      const surfMatch = trait.surf === 'any' || (trait.surf === 'turf' && surface === '芝') || (trait.surf === 'dirt' && surface === 'ダート')
+      if (distMatch && surfMatch) return Math.round(trait.pts * weight)
+      if (distMatch || surfMatch) return Math.round(trait.pts * weight * 0.3)
+      return Math.round(trait.pts * weight * -0.5)
+    }
+  }
+  return 0
+}
+
+function getBloodlineBonus(
+  stat: { sire?: string | null; dam?: string | null; sireOfSire?: string | null; damOfSire?: string | null; sireOfDam?: string | null; damOfDam?: string | null },
+  distance: number,
+  surface: string,
+): number {
+  const distGroup = getDistGroup(distance)
+  // 父: 最も直接的な遺伝（w=1.0）
+  const b1 = getSireTraitBonus(stat.sire,       distGroup, surface, 1.0)
+  // 母: 産駒への影響大（w=0.8）
+  const b2 = getSireTraitBonus(stat.dam,         distGroup, surface, 0.8)
+  // 父父・父母: 父系祖父母（各w=0.45）
+  const b3 = getSireTraitBonus(stat.sireOfSire,  distGroup, surface, 0.45)
+  const b4 = getSireTraitBonus(stat.damOfSire,   distGroup, surface, 0.35)
+  // 母父・母母: 母系祖父母（各w=0.45/0.3）
+  const b5 = getSireTraitBonus(stat.sireOfDam,   distGroup, surface, 0.45)
+  const b6 = getSireTraitBonus(stat.damOfDam,    distGroup, surface, 0.3)
+  return Math.max(-8, Math.min(12, b1 + b2 + b3 + b4 + b5 + b6))
 }
 
 const RANK_CAPS = [65, 52, 38, 28, 22, 18, 15]
@@ -803,10 +878,14 @@ function buildScore(
   const oddsDataScale = stat.totalRaces >= 10 ? 0.35 : stat.totalRaces >= 4 ? 0.65 : 1.0
   const wOdds = Math.round(oddsRaw * oddsDataScale * weights.oddsMult)
 
+  // 血統ボーナス（父・母・父父・父母・母父・母母の2世代全祖先分析）
+  const bloodlineRaw = getBloodlineBonus(stat as { sire?: string | null; dam?: string | null; sireOfSire?: string | null; damOfSire?: string | null; sireOfDam?: string | null; damOfDam?: string | null }, race.distance, race.surface)
+  const wBloodline = Math.round(bloodlineRaw * weights.bloodlineMult)
+
   const totalBonus = wRecentForm + wDistance + wVenue + wSurface + wG1 + wAge
     + wJockey + wRaceAffinity + wTrackCond + prepBonus + weightBonus
     + potentialBonus + trendBonus
-    + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace + wOdds
+    + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace + wOdds + wBloodline
 
   const cappedBase = Math.min(effectiveBase, 60)
   // G1経験2戦以上の馬は最低スコアを底上げ（掲示板常連馬の過小評価防止）
@@ -850,6 +929,7 @@ function buildScore(
         courseFeature: wCourseFeature,
         pace:         wPace,
         odds:         wOdds,
+        bloodline:    wBloodline,
       },
     },
   }
