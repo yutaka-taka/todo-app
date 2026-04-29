@@ -21,6 +21,10 @@ export interface LocalWeights {
   oddsMult: number
   // 血統ボーナス
   bloodlineMult: number
+  // v341 (#5) 馬体重絶対値
+  weightAbsMult: number
+  // v341 (#4) 騎手×場×距離
+  jockeyVenueDistMult: number
 }
 
 // v340 (backfill後ブラインド最適化、2026-04-29): 68.7%精度ベスト
@@ -43,7 +47,26 @@ export const DEFAULT_WEIGHTS: LocalWeights = {
   // オッズは強いシグナル。backfill後は1.8で重視
   oddsMult:             1.8,    // 旧1.2 → 1.8
   bloodlineMult:        1.0,
+  // v341 新因子（自己学習で最適化）
+  weightAbsMult:        1.0,
+  jockeyVenueDistMult:  1.0,
 }
+
+// v341 (#2) キャリブレーション学習: 予測値→実連対率の補正テーブル
+// {predicted: actual} 形式。線形補間で適用。
+export interface CalibrationCurve {
+  points: { pred: number; actual: number }[]  // 単調増加
+}
+export const DEFAULT_CALIBRATION: CalibrationCurve = { points: [] }
+
+// (#4) 騎手 x 競馬場 x 距離グループ別連対率
+// distGroup: 'short' (~1400) | 'mile' (~1700) | 'middle' (~2000) | 'long' (2400+)
+export type JockeyVenueDistKey = string  // "ルメール|東京|middle"
+export type JockeyVenueDistMap = Map<JockeyVenueDistKey, { races: number; places: number }>
+
+// (#3) softmax 正規化フラグ
+// true なら出走馬全体で sum(placeRate) = 200% になるよう調整
+export type ScoringMode = 'classic' | 'softmax'
 
 interface EntryInput {
   horseNumber: number
@@ -99,6 +122,8 @@ export interface ScoredHorse {
       pace: number
       odds: number
       bloodline: number
+      weightAbs?: number
+      jockeyVenueDist?: number
     }
   }
 }
@@ -235,6 +260,117 @@ function getBloodlineBonus(
 // 旧[65,52,38,28,22,18,15] は実連対率(31/25/20/17/14/13/13)から大幅に過大評価。
 // 表示値が現実に近づくよう調整。
 const RANK_CAPS = [55, 45, 36, 28, 23, 19, 16]
+
+// ========== (#5) 馬体重絶対値分析 ==========
+// 馬の基準体重（過去の平均的な出走時体重）からの乖離を評価
+function getWeightAbsoluteBonus(
+  currentWeight: number | null | undefined,
+  referenceWeight: number | null | undefined,
+  surface: string,
+): number {
+  if (currentWeight == null || referenceWeight == null) return 0
+  const diff = currentWeight - referenceWeight
+  const ratio = diff / referenceWeight
+  // 芝: 軽め±2%が好走帯。ダート: 重め+1〜+3%が好走帯
+  if (surface === '芝') {
+    if (Math.abs(ratio) < 0.005) return 2     // ベスト体重
+    if (Math.abs(ratio) < 0.012) return 1
+    if (ratio > 0.025) return -3                // 太め残り
+    if (ratio < -0.025) return -3               // 痩せ過ぎ
+    return 0
+  } else {
+    if (ratio > 0 && ratio < 0.02) return 2    // 重めキープ好走
+    if (ratio > 0.025) return -2
+    if (ratio < -0.02) return -2
+    return 0
+  }
+}
+
+// ========== (#7) 時系列減衰 ==========
+// 古いレースほど weight を下げる（半減期5年）
+// raceDate: スコア対象レース日, refDate: 参照レース日
+export function getTimeDecayWeight(refDate: Date, raceDate: Date | undefined, halfLifeYears = 5): number {
+  if (!raceDate) return 1.0
+  const years = (raceDate.getTime() - refDate.getTime()) / (365.25 * 86400000)
+  if (years <= 0) return 1.0
+  return Math.pow(0.5, years / halfLifeYears)
+}
+
+// ========== (#4) 騎手×場×距離 ==========
+export function getDistGroupForJockey(distance: number): 'short' | 'mile' | 'middle' | 'long' {
+  if (distance >= 2400) return 'long'
+  if (distance >= 1700) return 'middle'
+  if (distance >= 1500) return 'mile'
+  return 'short'
+}
+
+function getJockeyVenueDistBonus(
+  jockey: string | null | undefined,
+  venue: string,
+  distance: number,
+  jvdMap: JockeyVenueDistMap | null | undefined,
+): number {
+  if (!jockey || !jvdMap) return 0
+  const dg = getDistGroupForJockey(distance)
+  // 完全一致
+  const key = `${jockey}|${venue}|${dg}`
+  let s = jvdMap.get(key)
+  // 短縮名対応：jockey が短縮形で記録されている場合は前方一致
+  if (!s) {
+    jvdMap.forEach((v, k) => {
+      if (s) return
+      const parts = k.split('|')
+      if (parts[1] === venue && parts[2] === dg) {
+        if (parts[0].startsWith(jockey) || jockey.startsWith(parts[0])) {
+          if (parts[0].length >= 2 && jockey.length >= 2) s = v
+        }
+      }
+    })
+  }
+  if (!s || s.races < 3) return 0
+  const rate = s.places / s.races
+  const sf = Math.min(s.races, 10) / 10
+  if (rate >= 0.40) return Math.round(8 * sf)
+  if (rate >= 0.25) return Math.round(3 * sf)
+  if (rate < 0.10 && s.races >= 5) return -Math.round(4 * sf)
+  return 0
+}
+
+// ========== (#2) キャリブレーション ==========
+export function applyCalibration(predicted: number, curve: CalibrationCurve | null | undefined): number {
+  if (!curve || !curve.points || curve.points.length < 2) return predicted
+  const pts = curve.points
+  if (predicted <= pts[0].pred) return pts[0].actual
+  if (predicted >= pts[pts.length - 1].pred) return pts[pts.length - 1].actual
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1]
+    if (predicted >= a.pred && predicted <= b.pred) {
+      const t = (predicted - a.pred) / (b.pred - a.pred)
+      return a.actual + t * (b.actual - a.actual)
+    }
+  }
+  return predicted
+}
+
+// ========== (#3) softmax 正規化 ==========
+// 全馬の effectiveScore から exp 正規化して連対確率を計算
+// 連対は 1-2着 (2頭) なので、出走頭数 N に対して期待値 = 200%
+function applySoftmaxNormalization(
+  scores: { score: number; horseName: string }[],
+  fieldSize: number,
+  temperature = 12,  // 高いほど均一、低いほど鋭い
+): Map<string, number> {
+  if (scores.length === 0) return new Map()
+  const maxScore = Math.max(...scores.map(s => s.score))
+  const exps = scores.map(s => ({ name: s.horseName, e: Math.exp((s.score - maxScore) / temperature) }))
+  const sumExp = exps.reduce((a, x) => a + x.e, 0)
+  const targetSum = Math.min(200, fieldSize * 100 * 2 / fieldSize)  // = 200
+  const result = new Map<string, number>()
+  for (const x of exps) {
+    result.set(x.name, (x.e / sumExp) * targetSum)
+  }
+  return result
+}
 
 // 前方一致でも騎手ランクを返す（netkeiba の短縮名に対応）
 function getJockeyRank(jockey: string | null | undefined): number {
@@ -433,11 +569,20 @@ function getPaceBonus(runningStyle: string | null | undefined, paceType: 'high' 
 
 // ========== メインスコアリング ==========
 
+// (#1-#7) 拡張オプション
+export interface ScoringOptions {
+  jockeyVenueDistMap?: JockeyVenueDistMap | null
+  calibration?: CalibrationCurve | null
+  scoringMode?: ScoringMode  // 'classic' (default) or 'softmax'
+  softmaxTemperature?: number
+}
+
 export function localScoreHorses(
   entries: EntryInput[],
   race: RaceContext,
   stats: HorseStat[],
-  weights: LocalWeights = DEFAULT_WEIGHTS
+  weights: LocalWeights = DEFAULT_WEIGHTS,
+  options: ScoringOptions = {}
 ): ScoredHorse[] {
   const statMap = new Map(stats.map((s) => [s.horseName, s]))
 
@@ -457,8 +602,21 @@ export function localScoreHorses(
 
   const scored = entries.map((entry) => {
     const stat = statMap.get(entry.horseName) ?? null
-    return buildScore(entry, race, stat, weights, paceType)
+    return buildScore(entry, race, stat, weights, paceType, options)
   })
+
+  // ========== (#3) softmax 正規化モード ==========
+  if (options.scoringMode === 'softmax') {
+    const sm = applySoftmaxNormalization(
+      scored.map(s => ({ score: s.placeRate, horseName: s.horseName })),
+      entries.length,
+      options.softmaxTemperature ?? 12,
+    )
+    for (const s of scored) {
+      const v = sm.get(s.horseName)
+      if (v != null) s.placeRate = v
+    }
+  }
 
   scored.sort((a, b) => b.placeRate - a.placeRate)
 
@@ -479,6 +637,13 @@ export function localScoreHorses(
     top7[0].placeRate = Math.max(top7[0].placeRate - 5, top7[1].placeRate + 2)
   }
 
+  // ========== (#2) キャリブレーション ==========
+  if (options.calibration && options.calibration.points && options.calibration.points.length >= 2) {
+    for (const s of top7) {
+      s.placeRate = applyCalibration(s.placeRate, options.calibration)
+    }
+  }
+
   return top7.map((s, i) => ({
     ...s,
     rank: i + 1,
@@ -491,7 +656,8 @@ function buildScore(
   race: RaceContext,
   stat: (HorseStat & { lastRacePopularity?: number | null }) | null,
   weights: LocalWeights,
-  paceType: 'high' | 'medium' | 'slow' = 'medium'
+  paceType: 'high' | 'medium' | 'slow' = 'medium',
+  options: ScoringOptions = {}
 ): ScoredHorse {
   if (!stat || stat.totalRaces === 0) {
     // v340: データなし馬でも市場人気・騎手・厩舎から大胆に評価する
@@ -920,10 +1086,25 @@ function buildScore(
   const bloodlineRaw = getBloodlineBonus(stat as { sire?: string | null; dam?: string | null; sireOfSire?: string | null; damOfSire?: string | null; sireOfDam?: string | null; damOfDam?: string | null }, race.distance, race.surface)
   const wBloodline = Math.round(bloodlineRaw * weights.bloodlineMult)
 
+  // (#5) 馬体重絶対値: 当該馬の過去平均体重との偏差から評価
+  // 参照体重 = entry.horseWeight - weightChange（前走体重）。複数前走があるならstat側に持たせるが、現状は前走比のみ利用可能。
+  // 簡易実装: 前走体重を参照値とし、現在体重との差を絶対値補正に使う
+  let weightAbsRaw = 0
+  if (entry.horseWeight != null && entry.weightChange != null) {
+    const refWeight = entry.horseWeight - entry.weightChange
+    weightAbsRaw = getWeightAbsoluteBonus(entry.horseWeight, refWeight, race.surface)
+  }
+  const wWeightAbs = Math.round(weightAbsRaw * weights.weightAbsMult)
+
+  // (#4) 騎手 x 競馬場 x 距離グループ別連対率
+  const jockeyVDRaw = getJockeyVenueDistBonus(entry.jockey, race.venue, race.distance, options.jockeyVenueDistMap)
+  const wJockeyVD = Math.round(jockeyVDRaw * weights.jockeyVenueDistMult)
+
   const totalBonus = wRecentForm + wDistance + wVenue + wSurface + wG1 + wAge
     + wJockey + wRaceAffinity + wTrackCond + prepBonus + weightBonus
     + potentialBonus + trendBonus
     + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace + wOdds + wBloodline
+    + wWeightAbs + wJockeyVD
 
   // v340 キャリブレーション: 旧60→50 で過大評価を抑制
   // 1位予測平均62.8% vs 実連対率31.5% の +31pt 乖離を是正
@@ -970,7 +1151,9 @@ function buildScore(
         pace:         wPace,
         odds:         wOdds,
         bloodline:    wBloodline,
-      },
+        weightAbs:    wWeightAbs,
+        jockeyVenueDist: wJockeyVD,
+      } as ScoredHorse['factors']['_bonuses'],
     },
   }
 }

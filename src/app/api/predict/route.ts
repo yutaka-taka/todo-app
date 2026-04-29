@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { generatePrediction } from '@/lib/ai'
 import { localScoreHorses } from '@/lib/scorer'
-import { getLocalWeights } from '@/lib/localAutoLearn'
+import { getLocalWeights, getLocalCalibration } from '@/lib/localAutoLearn'
 import { findNetkeibaRaceId, fetchOddsRanking } from '@/lib/netkeibaRaceId'
 import { format } from 'date-fns'
 import { ja } from 'date-fns/locale'
@@ -77,12 +77,13 @@ export async function POST(request: NextRequest) {
     if (isLocalModeReady && hasEntries) {
       mode = 'local'
       const horseNames = entriesWithOdds.map((e) => e.horseName)
-      const [stats, weights] = await Promise.all([
+      const [stats, weights, calibration] = await Promise.all([
         prisma.horseStat.findMany({ where: { horseName: { in: horseNames } } }),
         getLocalWeights(),
+        getLocalCalibration(),
       ])
       const raceWithCond = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
-      const scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights)
+      const scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration })
       predictions = scored
       const coveredCount = stats.length
       analysis = `【ローカル予想モード】蓄積済み馬データ${horseStatCount}頭を使用（Claude API不要）。出走${race.entries.length}頭中${coveredCount}頭のデータがDBに存在します。残り${race.entries.length - coveredCount}頭は平均値で推定。レース結果を入力するたびに自動学習し精度が向上します。`

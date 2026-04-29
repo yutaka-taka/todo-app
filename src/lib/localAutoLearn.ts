@@ -43,6 +43,9 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
     // v336
     oddsMult:             empty(),
     bloodlineMult:        empty(),
+    // v341 新因子
+    weightAbsMult:        empty(),
+    jockeyVenueDistMult:  empty(),
   }
 
   const races = await prisma.race.findMany({
@@ -86,6 +89,8 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
         ['paceMult',             bonuses.pace             ?? 0],
         ['oddsMult',             bonuses.odds             ?? 0],
         ['bloodlineMult',        bonuses.bloodline        ?? 0],
+        ['weightAbsMult',        bonuses.weightAbs        ?? 0],
+        ['jockeyVenueDistMult',  bonuses.jockeyVenueDist  ?? 0],
       ]
 
       for (const [key, val] of factorMap) {
@@ -334,4 +339,28 @@ export async function getLocalWeights(): Promise<LocalWeights> {
     }
   } catch { /* fallback to defaults */ }
   return { ...DEFAULT_WEIGHTS }
+}
+
+// (#2) AlgorithmConfig.insights から calibration曲線を取得
+// 予測placeRateを実連対率にマッピングして表示の現実性を高める
+export async function getLocalCalibration(): Promise<{ points: { pred: number; actual: number }[] } | null> {
+  try {
+    const config = await prisma.algorithmConfig.findFirst({
+      where: { isActive: true },
+      orderBy: { version: 'desc' },
+    })
+    if (config?.insights) {
+      const parsed = JSON.parse(config.insights as string) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const ins = parsed as { calibration?: { pred: number; actual: number }[] | { points: { pred: number; actual: number }[] } }
+        if (ins.calibration) {
+          if (Array.isArray(ins.calibration)) return { points: ins.calibration }
+          if (typeof ins.calibration === 'object' && Array.isArray((ins.calibration as { points?: unknown }).points)) {
+            return ins.calibration as { points: { pred: number; actual: number }[] }
+          }
+        }
+      }
+    }
+  } catch { /* silent */ }
+  return null
 }
