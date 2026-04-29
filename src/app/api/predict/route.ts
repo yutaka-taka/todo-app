@@ -63,9 +63,10 @@ export async function POST(request: NextRequest) {
     } catch { /* オッズ取得失敗は無視 */ }
 
     // オッズ情報をエントリにマージ（馬番で紐付け）
+    // ライブnetkeibaオッズ → DBに保存されている popularity の順でフォールバック
     const entriesWithOdds = weightedEntries.map((e) => ({
       ...e,
-      oddsPopularity: oddsRanking[e.horseNumber] ?? null,
+      oddsPopularity: oddsRanking[e.horseNumber] ?? e.popularity ?? null,
     }))
 
     let predictions

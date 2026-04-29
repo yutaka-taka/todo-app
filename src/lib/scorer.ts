@@ -23,26 +23,25 @@ export interface LocalWeights {
   bloodlineMult: number
 }
 
+// v340 (backfill後ブラインド最適化、2026-04-29): 68.7%精度ベスト
 export const DEFAULT_WEIGHTS: LocalWeights = {
-  recentFormMult:       0.97,
+  recentFormMult:       0.87,   // 旧0.97 → 0.87（人気を相対的に強化）
   distanceMult:         1.28,
-  venueMult:            1.15,
+  venueMult:            1.27,   // 旧1.15
   surfaceMult:          1.05,
-  g1Mult:               0.80,
+  g1Mult:               0.90,   // 旧0.80
   ageMult:              0.50,
-  jockeyMult:           0.86,
+  jockeyMult:           0.98,   // 旧0.86
   raceAffinityMult:     1.0,
   trackCondMult:        1.0,
-  // 新因子はすべて 1.0 から開始（自己学習で最適化）
   gateMult:             1.0,
   trainerMult:          1.0,
   lastThreeFurlongMult: 1.0,
   restIntervalMult:     1.0,
-  courseFeatureMult:    1.0,
+  courseFeatureMult:    0.88,
   paceMult:             1.0,
-  // オッズは強いシグナル。初期値1.2でやや重視
-  oddsMult:             1.2,
-  // 血統: 初期値1.0（自己学習で最適化）
+  // オッズは強いシグナル。backfill後は1.8で重視
+  oddsMult:             1.8,    // 旧1.2 → 1.8
   bloodlineMult:        1.0,
 }
 
@@ -232,7 +231,10 @@ function getBloodlineBonus(
   return Math.max(-8, Math.min(12, b1 + b2 + b3 + b4 + b5 + b6))
 }
 
-const RANK_CAPS = [65, 52, 38, 28, 22, 18, 15]
+// v340 キャリブレーション: ブラインド実測値に合わせて上限を下げる
+// 旧[65,52,38,28,22,18,15] は実連対率(31/25/20/17/14/13/13)から大幅に過大評価。
+// 表示値が現実に近づくよう調整。
+const RANK_CAPS = [55, 45, 36, 28, 23, 19, 16]
 
 // 前方一致でも騎手ランクを返す（netkeiba の短縮名に対応）
 function getJockeyRank(jockey: string | null | undefined): number {
@@ -492,7 +494,10 @@ function buildScore(
   paceType: 'high' | 'medium' | 'slow' = 'medium'
 ): ScoredHorse {
   if (!stat || stat.totalRaces === 0) {
+    // v340: データなし馬でも市場人気・騎手・厩舎から大胆に評価する
+    // 旧: 上限50%でデータ豊富馬の60%以上に届かず、人気上位の新興勢力が常に圏外に落ちていた
     let partialBonus = 0
+    let baseScore = 25  // 旧22→25
     const notes: string[] = []
     if (entry.age != null) {
       if (entry.age === 3)                         { partialBonus += 3; notes.push('3歳') }
@@ -505,18 +510,21 @@ function buildScore(
     }
     // 騎手ランク（データなし時でも有力騎手を評価）
     let jockeyNote = entry.jockey ?? '未定'
+    let topJockey = false
     if (entry.jockey) {
       const jRank = getJockeyRank(entry.jockey)
-      partialBonus += Math.round(jRank * 0.7)
-      if (jRank >= 14)      { jockeyNote = `${entry.jockey}(最上位騎手)`; notes.push(jockeyNote) }
-      else if (jRank >= 10) { jockeyNote = `${entry.jockey}(S級騎手)`;   notes.push(jockeyNote) }
+      partialBonus += Math.round(jRank * 0.9)  // 旧0.7→0.9
+      if (jRank >= 14)      { jockeyNote = `${entry.jockey}(最上位騎手)`; notes.push(jockeyNote); topJockey = true }
+      else if (jRank >= 10) { jockeyNote = `${entry.jockey}(S級騎手)`;   notes.push(jockeyNote); topJockey = true }
       else if (jRank >= 7)  { jockeyNote = `${entry.jockey}(A+級騎手)`;  notes.push(jockeyNote) }
     }
     // 調教師ランク（データなし時でも有力厩舎を評価）
+    let topTrainer = false
     if (entry.trainer) {
       const tRank = TRAINER_RANKS[entry.trainer] ?? 0
-      partialBonus += Math.round(tRank * 0.4)
-      if (tRank >= 5) notes.push(`${entry.trainer}厩舎`)
+      partialBonus += Math.round(tRank * 0.6)  // 旧0.4→0.6
+      if (tRank >= 8) { notes.push(`${entry.trainer}厩舎(S級)`); topTrainer = true }
+      else if (tRank >= 5) notes.push(`${entry.trainer}厩舎`)
     }
     // 枠番ボーナス（軽く反映）
     const gBonusRaw = getGateBonus(entry.frameNumber, race.distance, race.surface)
@@ -524,23 +532,32 @@ function buildScore(
     // 前走上がり3F（データなし時も反映）
     const ltfBonusRaw = getLastThreeFurlongBonus(entry.lastThreeFurlong, race.surface)
     partialBonus += Math.round(ltfBonusRaw * 0.5)
-    // 人気補正（データなし馬は市場オッズを強く重視）
+    // 人気補正（v340: データなし馬は市場人気を主信号として大胆に使う）
     if (entry.oddsPopularity != null) {
       const oddsRaw = getOddsBonus(entry.oddsPopularity)
-      partialBonus += Math.round(oddsRaw * 1.4)
-      if (entry.oddsPopularity <= 3) notes.push(`${entry.oddsPopularity}番人気`)
+      partialBonus += Math.round(oddsRaw * 1.8)  // 旧1.4→1.8
+      if (entry.oddsPopularity <= 3) {
+        notes.push(`${entry.oddsPopularity}番人気`)
+        // 人気1-3位なら基底を底上げ（市場が高評価＝戦績不明でも実力者の証）
+        baseScore += entry.oddsPopularity === 1 ? 14 : entry.oddsPopularity === 2 ? 10 : 7
+      } else if (entry.oddsPopularity <= 5) {
+        baseScore += 3
+      }
     }
+    // トップ騎手×トップ厩舎の組み合わせ：実力馬の典型パターン
+    if (topJockey && topTrainer) partialBonus += 4
     return {
       rank: 0,
       horseNumber: entry.horseNumber,
       horseName: entry.horseName,
-      placeRate: Math.max(18, Math.min(50, 22 + partialBonus)),
+      // 旧: max(18, min(50, 22 + partialBonus)) → 上限を65に拡大しデータ豊富馬と同等に競える
+      placeRate: Math.max(18, Math.min(65, baseScore + partialBonus)),
       factors: {
         recentForm: 'データなし',
         distanceSuitability: '距離実績未収集',
         courseRecord: 'コース実績未収集',
         jockeyStats: jockeyNote,
-        reason: `DBに成績データなし${notes.length ? `（${notes.join('/')}）` : ''}。自己学習を続けると精度が向上します。`,
+        reason: `DBに成績データなし${notes.length ? `（${notes.join('/')}）` : ''}。市場人気・騎手・厩舎から推定。`,
       },
     }
   }
@@ -556,6 +573,21 @@ function buildScore(
     const g1Smoothed = smoothedRate(stat.g1Places, stat.g1Races)
     const g1Weight = Math.min(stat.g1Races, 10) / 10 * 0.6
     effectiveBase = baseSmoothed * (1 - g1Weight) * 100 + g1Smoothed * g1Weight * 100
+  }
+
+  // v340: 少データ馬に人気ベースのpriorをブレンドする
+  // 理由: stat.totalRaces=1で0/1の馬は smoothedRate=10% と過小評価されるが、
+  // 市場が2番人気と評価していれば実力40-50%レベル。少データほどpriorを重視。
+  if (stat.totalRaces < 4 && entry.oddsPopularity != null) {
+    const pop = entry.oddsPopularity
+    const popPrior = pop === 1 ? 55
+                  : pop === 2 ? 45
+                  : pop === 3 ? 35
+                  : pop <= 5 ? 28
+                  : pop <= 8 ? 20
+                  : 15
+    const priorWeight = (4 - stat.totalRaces) / 4 * 0.7  // 0戦時0.7、1戦0.525、2戦0.35、3戦0.175
+    effectiveBase = effectiveBase * (1 - priorWeight) + popPrior * priorWeight
   }
 
   // --- 近走フォーム ---
@@ -774,15 +806,21 @@ function buildScore(
   }
 
   // --- フォームトレンド ---
+  // v340: 上昇トレンドの検出を強化。直近1戦への重み付けを大きく。
   let trendBonus = 0
   if (stat.recentForm) {
     const tPos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
     if (tPos.length >= 4) {
       const recentAvg = (tPos[0] + tPos[1]) / 2
       const olderAvg  = (tPos[2] + tPos[3]) / 2
-      if (recentAvg < olderAvg - 1.5) trendBonus = 6
+      if (recentAvg < olderAvg - 2.5) trendBonus = 9
+      else if (recentAvg < olderAvg - 1.5) trendBonus = 6
       else if (recentAvg < olderAvg - 0.5) trendBonus = 3
       else if (recentAvg > olderAvg + 2) trendBonus = -5
+    }
+    // 直近2戦が連対 + 過去2戦は2着外 → 開花パターン
+    if (tPos.length >= 4 && tPos[0] <= 2 && tPos[1] <= 2 && tPos[2] >= 4 && tPos[3] >= 4) {
+      trendBonus = Math.max(trendBonus, 7)
     }
   }
 
@@ -887,9 +925,11 @@ function buildScore(
     + potentialBonus + trendBonus
     + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace + wOdds + wBloodline
 
-  const cappedBase = Math.min(effectiveBase, 60)
-  // G1経験2戦以上の馬は最低スコアを底上げ（掲示板常連馬の過小評価防止）
-  const minFloor = (race.grade === 'G1' && stat.g1Races >= 2) ? 24 : 20
+  // v340 キャリブレーション: 旧60→50 で過大評価を抑制
+  // 1位予測平均62.8% vs 実連対率31.5% の +31pt 乖離を是正
+  const cappedBase = Math.min(effectiveBase, 50)
+  // 旧24→22 で底上げを緩和（過剰promo を抑制）
+  const minFloor = (race.grade === 'G1' && stat.g1Races >= 2) ? 22 : 18
   const finalRate = Math.max(minFloor, cappedBase + totalBonus)
 
   const reason = [

@@ -34,3 +34,25 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# local logs and temp data
+*.log
+server.log
+backup_data/
+neon/
+tempraces_result.json
+delete_tenno.sql
+fix-db.mjs
+process.env.txt
+API_Key.txt
+SnapCrab_*.png
+競馬予想アプリ.txt
+
+# scripts: 一時進捗ファイル / ログ
+scripts/.backfill_progress.json
+scripts/.backfill_schedule_cache.json
+scripts/backfill_log.txt
+scripts/debug_netkeiba_search.js
+
+# Claude Code
+.claude/

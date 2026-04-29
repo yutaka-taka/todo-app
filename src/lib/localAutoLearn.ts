@@ -42,6 +42,7 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
     paceMult:             empty(),
     // v336
     oddsMult:             empty(),
+    bloodlineMult:        empty(),
   }
 
   const races = await prisma.race.findMany({
@@ -84,6 +85,7 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
         ['courseFeatureMult',    bonuses.courseFeature    ?? 0],
         ['paceMult',             bonuses.pace             ?? 0],
         ['oddsMult',             bonuses.odds             ?? 0],
+        ['bloodlineMult',        bonuses.bloodline        ?? 0],
       ]
 
       for (const [key, val] of factorMap) {

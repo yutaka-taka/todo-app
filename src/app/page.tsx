@@ -313,6 +313,19 @@ export default function Home() {
   const [pedigreeResult, setPedigreeResult] = useState<{ updated: number; message: string } | null>(null)
   const [pedigreeError, setPedigreeError] = useState<string | null>(null)
 
+  // 的中精度最適化（ブラインド全因子グリッドサーチ）
+  const [blindOptimizing, setBlindOptimizing] = useState(false)
+  const [blindOptimizeResult, setBlindOptimizeResult] = useState<{
+    elapsed: number
+    version: number | null
+    bestLabel: string | null
+    beforeAccuracy: number | null
+    afterAccuracy: number | null
+    ranks: { rank: number; hits: number; total: number; pct: number; predAvg: number }[]
+    years: { year: number; pct: number; full: number; half: number; miss: number }[]
+  } | null>(null)
+  const [blindOptimizeError, setBlindOptimizeError] = useState<string | null>(null)
+
   const fetchRaces = useCallback(async () => {
     setLoadingRaces(true)
     setRaceError(null)
@@ -360,6 +373,30 @@ export default function Home() {
       setOptimizeError(e instanceof Error ? e.message : '最適化に失敗しました')
     } finally {
       setOptimizing(false)
+    }
+  }
+
+  const handleBlindOptimize = async () => {
+    setBlindOptimizing(true)
+    setBlindOptimizeError(null)
+    setBlindOptimizeResult(null)
+    try {
+      const res = await fetch('/api/blind-optimize', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok || !data.success) throw new Error(data.error ?? '的中精度最適化に失敗しました')
+      setBlindOptimizeResult({
+        elapsed: data.elapsed,
+        version: data.version,
+        bestLabel: data.bestLabel,
+        beforeAccuracy: data.beforeAccuracy,
+        afterAccuracy: data.afterAccuracy,
+        ranks: data.ranks ?? [],
+        years: data.years ?? [],
+      })
+    } catch (e) {
+      setBlindOptimizeError(e instanceof Error ? e.message : '的中精度最適化に失敗しました')
+    } finally {
+      setBlindOptimizing(false)
     }
   }
 
@@ -1763,6 +1800,101 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* 区切り線 */}
+            <div className="my-3 border-t border-[#1e2d4a]" />
+
+            {/* ⑤-2 的中精度最適化（ブラインド全因子グリッドサーチ） */}
+            <button
+              onClick={handleBlindOptimize}
+              disabled={blindOptimizing || optimizing || learning || learningAll || reanalyzing}
+              className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-fuchsia-700 to-purple-700 hover:from-fuchsia-600 hover:to-purple-600 text-white"
+            >
+              {blindOptimizing ? (
+                <><Spinner size={4} /><span className="pulse-gold">真ブラインド最適化中（1〜2分）...</span></>
+              ) : (
+                <><span>🎯</span><span>的中精度最適化</span></>
+              )}
+            </button>
+            <p className="text-[10px] text-slate-600 text-center mt-1 leading-relaxed">
+              全G1レースを時系列ブラインド評価し、ウェイトを自動最適化（Claude API不要）
+            </p>
+
+            {blindOptimizeError && (
+              <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
+                {blindOptimizeError}
+              </div>
+            )}
+
+            {blindOptimizeResult && (
+              <div className="mt-2 fade-in p-3 bg-fuchsia-900/20 border border-fuchsia-800/30 rounded-xl">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-fuchsia-400 text-sm">✓</span>
+                  <p className="text-xs text-fuchsia-400 font-medium">
+                    最適化完了（{blindOptimizeResult.elapsed}秒）
+                    {blindOptimizeResult.version != null && (
+                      <span className="ml-2 text-fuchsia-300/70">v{blindOptimizeResult.version} 保存</span>
+                    )}
+                  </p>
+                </div>
+
+                {blindOptimizeResult.beforeAccuracy != null && blindOptimizeResult.afterAccuracy != null && (
+                  <div className="flex items-center justify-center gap-3 mb-3 px-3 py-2 bg-[#080c18] rounded-lg">
+                    <div className="text-center">
+                      <div className="text-[9px] text-slate-500">Before</div>
+                      <div className="text-sm font-bold text-slate-400">{blindOptimizeResult.beforeAccuracy}%</div>
+                    </div>
+                    <div className="text-fuchsia-400">→</div>
+                    <div className="text-center">
+                      <div className="text-[9px] text-slate-500">After</div>
+                      <div className={`text-base font-bold ${
+                        (blindOptimizeResult.afterAccuracy ?? 0) > (blindOptimizeResult.beforeAccuracy ?? 0)
+                          ? 'text-emerald-400' : 'text-slate-400'
+                      }`}>
+                        {blindOptimizeResult.afterAccuracy}%
+                      </div>
+                    </div>
+                    {blindOptimizeResult.bestLabel && (
+                      <div className="ml-2 px-2 py-0.5 bg-fuchsia-900/40 rounded text-[10px] text-fuchsia-300">
+                        {blindOptimizeResult.bestLabel}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {blindOptimizeResult.ranks.length > 0 && (
+                  <div className="mb-2">
+                    <div className="text-[10px] text-slate-500 mb-1">順位別的中率</div>
+                    <div className="space-y-0.5">
+                      {blindOptimizeResult.ranks.map((r) => (
+                        <div key={r.rank} className="flex items-center justify-between text-[10px]">
+                          <span className="text-slate-500">{r.rank}位</span>
+                          <span className="text-slate-400">
+                            <span className="text-fuchsia-300">{r.pct}%</span>
+                            <span className="text-slate-600 ml-1">({r.hits}/{r.total})</span>
+                            <span className="text-slate-600 ml-2">予測{r.predAvg}%</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {blindOptimizeResult.years.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-fuchsia-800/30">
+                    <div className="text-[10px] text-slate-500 mb-1">年別精度</div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {blindOptimizeResult.years.map((y) => (
+                        <div key={y.year} className="flex justify-between text-[9px]">
+                          <span className="text-slate-500">{y.year}</span>
+                          <span className={`${y.pct >= 75 ? 'text-emerald-400' : y.pct >= 60 ? 'text-fuchsia-300' : 'text-slate-400'}`}>{y.pct}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
