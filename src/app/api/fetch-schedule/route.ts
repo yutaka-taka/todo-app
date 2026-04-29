@@ -78,6 +78,31 @@ const RACE_INFO: Record<string, { venue: string; grade: string; surface: string;
   'ラジオNIKKEI賞': { venue: '福島', grade: 'G2', surface: '芝', distance: 1800 },
   'プロキオンステークス': { venue: '中京', grade: 'G2', surface: 'ダート', distance: 1400 },
   'エプソムカップ': { venue: '東京', grade: 'G2', surface: '芝', distance: 1800 },
+  // 追加 G2（2026-04-30）
+  '京王杯スプリングカップ': { venue: '東京', grade: 'G2', surface: '芝', distance: 1400 },
+  '阪神大賞典': { venue: '阪神', grade: 'G2', surface: '芝', distance: 3000 },
+  'アメリカジョッキークラブカップ': { venue: '中山', grade: 'G2', surface: '芝', distance: 2200 },
+  '日経新春杯': { venue: '京都', grade: 'G2', surface: '芝', distance: 2400 },
+  '東海ステークス': { venue: '中京', grade: 'G2', surface: 'ダート', distance: 1800 },
+  'スワンステークス': { venue: '京都', grade: 'G2', surface: '芝', distance: 1400 },
+  'マイラーズカップ': { venue: '京都', grade: 'G2', surface: '芝', distance: 1600 },
+  '札幌記念': { venue: '札幌', grade: 'G2', surface: '芝', distance: 2000 },
+  'ダイヤモンドステークス': { venue: '東京', grade: 'G2', surface: '芝', distance: 3400 },
+  'シリウスステークス': { venue: '中京', grade: 'G2', surface: 'ダート', distance: 2000 },
+  'みやこステークス': { venue: '京都', grade: 'G2', surface: 'ダート', distance: 1800 },
+  '京王杯2歳ステークス': { venue: '東京', grade: 'G2', surface: '芝', distance: 1400 },
+  '京阪杯': { venue: '京都', grade: 'G2', surface: '芝', distance: 1200 },
+  '京成杯オータムハンデキャップ': { venue: '中山', grade: 'G2', surface: '芝', distance: 1600 },
+  '日経賞': { venue: '中山', grade: 'G2', surface: '芝', distance: 2500 },
+  // JRA 2026 重賞一覧との照合で追加（2026-04-30）
+  'チューリップ賞': { venue: '阪神', grade: 'G2', surface: '芝', distance: 1600 },
+  'ニュージーランドトロフィー': { venue: '東京', grade: 'G2', surface: '芝', distance: 1600 },
+  '阪神牝馬ステークス': { venue: '阪神', grade: 'G2', surface: '芝', distance: 1600 },
+  '紫苑ステークス': { venue: '中山', grade: 'G2', surface: '芝', distance: 2000 },
+  'セントライト記念': { venue: '中山', grade: 'G2', surface: '芝', distance: 2200 },
+  '毎日杯': { venue: '阪神', grade: 'G3', surface: '芝', distance: 1800 },  // 参考用
+  'アイルランドトロフィー': { venue: '東京', grade: 'G2', surface: '芝', distance: 1800 },
+  '阪神カップ': { venue: '阪神', grade: 'G2', surface: '芝', distance: 1400 },
 }
 
 type RaceFound = { name: string; date: Date; info: (typeof RACE_INFO)[string] }
@@ -167,14 +192,36 @@ async function fetchWeekendRaces(saturday: Date): Promise<RaceFound[]> {
   for (const [raceName, info] of Object.entries(RACE_INFO)) {
     if (!venueDay[info.venue]) continue  // 今週末その会場に開催がない
 
-    // 表記ゆれ対応（全角・半角括弧）
-    const variants = [
-      raceName,
-      raceName.replace(/（/g, '(').replace(/）/g, ')'),
-    ]
+    // 表記ゆれ対応（全角・半角括弧、カップ↔C、ステークス↔S 等）
+    const variants = new Set<string>()
+    const addVariants = (s: string) => {
+      variants.add(s)
+      variants.add(s.replace(/（/g, '(').replace(/）/g, ')'))
+      // カップ↔C / ステークス↔S / フィリーズ↔F / トロフィー↔T
+      if (s.includes('カップ')) variants.add(s.replace(/カップ/g, 'C'))
+      if (s.endsWith('C') && !s.endsWith('CC')) variants.add(s.replace(/C$/, 'カップ'))
+      if (s.includes('ステークス')) variants.add(s.replace(/ステークス/g, 'S'))
+      if (s.endsWith('S') && !s.endsWith('SS')) variants.add(s.replace(/S$/, 'ステークス'))
+      if (s.includes('フィリーズ')) variants.add(s.replace(/フィリーズ/g, 'F'))
+      if (s.endsWith('F') && !s.endsWith('FF')) variants.add(s.replace(/F$/, 'フィリーズ'))
+      if (s.includes('トロフィー')) variants.add(s.replace(/トロフィー/g, 'T'))
+      if (s.endsWith('T') && !s.endsWith('TT')) variants.add(s.replace(/T$/, 'トロフィー'))
+      if (s.includes('東京スポーツ杯')) variants.add(s.replace(/東京スポーツ杯/g, '東スポ杯'))
+      if (s.includes('東スポ杯')) variants.add(s.replace(/東スポ杯/g, '東京スポーツ杯'))
+      if (s.includes('アメリカジョッキークラブカップ')) variants.add(s.replace(/アメリカジョッキークラブカップ/g, 'AJCC'))
+      if (s.includes('AJCC')) variants.add(s.replace(/AJCC/g, 'アメリカJCC'))
+      if (s === '弥生賞ディープインパクト記念') variants.add('弥生賞')
+      if (s === '弥生賞') variants.add('弥生賞ディープインパクト記念')
+      if (s.includes('阪神ジュベナイルフィリーズ')) variants.add(s.replace(/阪神ジュベナイルフィリーズ/g, '阪神JF'))
+      if (s.includes('朝日杯フューチュリティ')) variants.add(s.replace(/朝日杯フューチュリティステークス|朝日杯フューチュリティ/g, '朝日杯FS'))
+    }
+    addVariants(raceName)
+    // 二度通して括弧変換とC↔カップ等を組み合わせる
+    Array.from(variants).forEach(v => addVariants(v))
+
     // race_id周辺のコンテキストにのみ存在するか確認
     const ctx = venueCtx[info.venue] ?? ''
-    const inPage = variants.some(v => ctx.includes(v))
+    const inPage = Array.from(variants).some(v => ctx.includes(v))
     if (!inPage) continue
 
     // レース日の特定
@@ -186,10 +233,13 @@ async function fetchWeekendRaces(saturday: Date): Promise<RaceFound[]> {
       raceDate = sunday
     } else {
       // 両日開催の会場: コンテキストで曜日判定、不明な場合は日曜
-      const nameIdx = ctx.indexOf(raceName) >= 0
-        ? ctx.indexOf(raceName)
-        : ctx.indexOf(variants[1])
-      const nearby = ctx.slice(Math.max(0, nameIdx - 300), nameIdx + 300)
+      let nameIdx = -1
+      Array.from(variants).some(v => {
+        const idx = ctx.indexOf(v)
+        if (idx >= 0) { nameIdx = idx; return true }
+        return false
+      })
+      const nearby = nameIdx >= 0 ? ctx.slice(Math.max(0, nameIdx - 300), nameIdx + 300) : ''
       raceDate = nearby.includes('土曜') ? saturday : sunday
     }
 

@@ -57,6 +57,7 @@ scripts/backfill_log.txt
 scripts/horse_backfill_log.txt
 scripts/debug_netkeiba_search.js
 scripts/debug_horse_profile.js
+scripts/test_schedule_match.js
 
 # Claude Code
 .claude/
