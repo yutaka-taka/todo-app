@@ -584,6 +584,8 @@ async function loadHistorical() {
   return { pedigreeMap, allRaces }
 }
 
+const EVAL_GRADES = new Set(['G1', 'G2', 'G3'])
+
 function runBlind(weights, eng, allRaces, pedigreeMap) {
   const statsMap = new Map()
   const jockeyStatsMap = new Map()
@@ -591,9 +593,10 @@ function runBlind(weights, eng, allRaces, pedigreeMap) {
   let full = 0, half = 0, miss = 0
   const rankHits = {1:{a:0,h:0,p:0}, 2:{a:0,h:0,p:0}, 3:{a:0,h:0,p:0}, 4:{a:0,h:0,p:0}, 5:{a:0,h:0,p:0}, 6:{a:0,h:0,p:0}, 7:{a:0,h:0,p:0}}
   const yearStats = {}
+  const gradeStats = {}
 
   for (const race of allRaces) {
-    if (race.grade === 'G1') {
+    if (EVAL_GRADES.has(race.grade)) {
       const actual = race.results.filter(r => r.finishPosition <= 2).map(r => r.horseName)
       if (actual.length >= 2) {
         const entryNames = new Set(race.entries.map(e => e.horseName))
@@ -630,6 +633,11 @@ function runBlind(weights, eng, allRaces, pedigreeMap) {
         if (hits === 2) yearStats[yr].full++
         else if (hits === 1) yearStats[yr].half++
         else yearStats[yr].miss++
+
+        if (!gradeStats[race.grade]) gradeStats[race.grade] = { full: 0, half: 0, miss: 0 }
+        if (hits === 2) gradeStats[race.grade].full++
+        else if (hits === 1) gradeStats[race.grade].half++
+        else gradeStats[race.grade].miss++
       }
     }
 
@@ -685,7 +693,7 @@ function runBlind(weights, eng, allRaces, pedigreeMap) {
 
   const total = full + half + miss
   const accuracy = total > 0 ? Math.round((full * 2 + half) / (total * 2) * 1000) / 10 : 0
-  return { total, accuracy, full, half, miss, rankHits, yearStats }
+  return { total, accuracy, full, half, miss, rankHits, yearStats, gradeStats }
 }
 
 async function main() {
@@ -774,6 +782,15 @@ async function main() {
   console.log(`精度: ${r0.accuracy}% → ${best.acc}%`)
   console.log('weights:', JSON.stringify(best.w))
   console.log('engine:', JSON.stringify(best.e))
+
+  console.log('\nグレード別:')
+  for (const grade of ['G1', 'G2', 'G3']) {
+    const v = best.r.gradeStats[grade]
+    if (!v) continue
+    const t = v.full+v.half+v.miss
+    const acc = Math.round((v.full*2+v.half)/(t*2)*100)
+    console.log(`  ${grade}: ${acc}% (${v.full}/${v.half}/${v.miss}) ${t}レース`)
+  }
 
   console.log('\n年別:')
   for (const [yr, v] of Object.entries(best.r.yearStats).sort((a,b)=>a[0]-b[0])) {

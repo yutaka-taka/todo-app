@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { format } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import { addDays, subDays, startOfDay, endOfDay } from 'date-fns'
+import { fetchOddsAndPopularity } from '@/lib/netkeibaRaceId'
 
 export const maxDuration = 300
 export const dynamic = 'force-dynamic'
@@ -302,12 +303,28 @@ export async function POST() {
           } catch { /* 個別エラーはスキップ */ }
         }
 
+        // エントリ登録直後にオッズ人気をDB保存（木〜土曜に確定するため失敗は無視）
+        let oddsCount = 0
+        try {
+          const oddsMap = await fetchOddsAndPopularity(raceId)
+          for (const [numStr, { popularity, odds }] of Object.entries(oddsMap)) {
+            const horseNumber = parseInt(numStr)
+            await prisma.raceEntry.updateMany({
+              where: { raceId: race.id, horseNumber },
+              data: { popularity, odds },
+            })
+            oddsCount++
+          }
+        } catch { /* オッズ未確定の場合は無視 */ }
+
         totalNew += saved
         raceResults.push({
           raceName: race.name,
           raceDate: format(raceDate, 'M月d日(E)', { locale: ja }),
           verified: saved,
-          message: saved > 0 ? `${saved}頭の出走馬を登録しました` : '出走馬の保存に失敗しました',
+          message: saved > 0
+            ? `${saved}頭を登録${oddsCount > 0 ? `・${oddsCount}頭の人気/オッズ取得` : '（オッズ未確定）'}`
+            : '出走馬の保存に失敗しました',
         })
       }
     }

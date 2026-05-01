@@ -67,42 +67,62 @@ export async function findNetkeibaRaceId(venue: string, raceDate: Date): Promise
   }
 }
 
+// 単勝オッズを取得してパースする内部共通ロジック
+async function fetchOddsEntries(netkeibaRaceId: string): Promise<Array<{ horseNumber: number; odds: number }>> {
+  const res = await fetch(
+    `https://race.netkeiba.com/odds/odds_get_form.html?type=b1&race_id=${netkeibaRaceId}`,
+    { headers: HEADERS },
+  )
+  if (!res.ok) return []
+
+  const buffer = await res.arrayBuffer()
+  let html: string
+  try { html = new TextDecoder('euc-jp').decode(buffer) }
+  catch { html = new TextDecoder('utf-8', { fatal: false }).decode(buffer) }
+
+  const tableM = html.match(/<table[^>]*class="[^"]*RaceOdds_HorseList_Table[^"]*"[^>]*>([\s\S]*?)<\/table>/i)
+  if (!tableM) return []
+
+  const oddsEntries: Array<{ horseNumber: number; odds: number }> = []
+  for (const row of Array.from(tableM[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi))) {
+    const tds = Array.from(row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi))
+    if (tds.length < 4) continue
+    const texts = tds.map((td) => td[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
+    const horseNumber = parseInt(texts[1])
+    if (isNaN(horseNumber) || horseNumber < 1 || horseNumber > 18) continue
+    const oddsText = texts[3]
+    if (!oddsText || oddsText.includes('-')) continue
+    const odds = parseFloat(oddsText)
+    if (!isNaN(odds)) oddsEntries.push({ horseNumber, odds })
+  }
+  return oddsEntries
+}
+
 // 単勝オッズ取得 → 馬番→人気順位のマップを返す
 // オッズ未確定（---.-）の場合は空オブジェクトを返す
 export async function fetchOddsRanking(netkeibaRaceId: string): Promise<Record<number, number>> {
   try {
-    const res = await fetch(
-      `https://race.netkeiba.com/odds/odds_get_form.html?type=b1&race_id=${netkeibaRaceId}`,
-      { headers: HEADERS },
-    )
-    if (!res.ok) return {}
-
-    const buffer = await res.arrayBuffer()
-    let html: string
-    try { html = new TextDecoder('euc-jp').decode(buffer) }
-    catch { html = new TextDecoder('utf-8', { fatal: false }).decode(buffer) }
-
-    const tableM = html.match(/<table[^>]*class="[^"]*RaceOdds_HorseList_Table[^"]*"[^>]*>([\s\S]*?)<\/table>/i)
-    if (!tableM) return {}
-
-    const oddsEntries: Array<{ horseNumber: number; odds: number }> = []
-    for (const row of Array.from(tableM[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi))) {
-      const tds = Array.from(row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi))
-      if (tds.length < 4) continue
-      const texts = tds.map((td) => td[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
-      const horseNumber = parseInt(texts[1])
-      if (isNaN(horseNumber) || horseNumber < 1 || horseNumber > 18) continue
-      const oddsText = texts[3]
-      if (!oddsText || oddsText.includes('-')) continue
-      const odds = parseFloat(oddsText)
-      if (!isNaN(odds)) oddsEntries.push({ horseNumber, odds })
-    }
-
-    if (oddsEntries.length === 0) return {}
-
-    oddsEntries.sort((a, b) => a.odds - b.odds)
+    const entries = await fetchOddsEntries(netkeibaRaceId)
+    if (entries.length === 0) return {}
+    entries.sort((a, b) => a.odds - b.odds)
     const result: Record<number, number> = {}
-    oddsEntries.forEach((item, i) => { result[item.horseNumber] = i + 1 })
+    entries.forEach((item, i) => { result[item.horseNumber] = i + 1 })
+    return result
+  } catch {
+    return {}
+  }
+}
+
+// 単勝オッズ取得 → 馬番→{popularity, odds}のマップを返す
+export async function fetchOddsAndPopularity(
+  netkeibaRaceId: string,
+): Promise<Record<number, { popularity: number; odds: number }>> {
+  try {
+    const entries = await fetchOddsEntries(netkeibaRaceId)
+    if (entries.length === 0) return {}
+    entries.sort((a, b) => a.odds - b.odds)
+    const result: Record<number, { popularity: number; odds: number }> = {}
+    entries.forEach((item, i) => { result[item.horseNumber] = { popularity: i + 1, odds: item.odds } })
     return result
   } catch {
     return {}

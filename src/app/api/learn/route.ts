@@ -57,20 +57,30 @@ export async function POST() {
       })
       .join('\n\n')
 
-    // Claude でパターン分析 + 簡易馬別成績（APIキーがある場合のみ）
+    // Claude でパターン分析 + 簡易馬別成績（APIキーがあれば試行、失敗時はローカル継続）
     const hasApiKey = !!process.env.ANTHROPIC_API_KEY
+    const localFallback = (note: string) => ({
+      horseStats: [],
+      newInsights: [],
+      updatedRules: currentRules,
+      keyPatterns: unanalyzedRaces.map((r) => `${r.name}を処理`),
+      estimatedAccuracy: currentConfig?.accuracy ?? 0,
+      summary: `${note}（${unanalyzedRaces.length}レース分の馬別データを蓄積）`,
+    })
     let learningResult
     if (hasApiKey) {
-      learningResult = await analyzeRacesForLearning({ racesData, currentRules })
-    } else {
-      learningResult = {
-        horseStats: [],
-        newInsights: [],
-        updatedRules: currentRules,
-        keyPatterns: unanalyzedRaces.map((r) => `${r.name}を処理`),
-        estimatedAccuracy: currentConfig?.accuracy ?? 0,
-        summary: `Claude APIキー未設定のため、馬別データのみ蓄積しました（${unanalyzedRaces.length}レース）。`,
+      try {
+        learningResult = await analyzeRacesForLearning({ racesData, currentRules })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        const isCredit = /credit balance/i.test(msg) || /invalid_request_error/i.test(msg)
+        console.warn('[learn] Claude unavailable, fallback to local-only:', msg)
+        learningResult = localFallback(
+          isCredit ? 'Claude API残高不足のためローカルのみで学習' : 'Claude API失敗のためローカルのみで学習'
+        )
       }
+    } else {
+      learningResult = localFallback('Claude APIキー未設定のためローカルのみで学習')
     }
 
     // 新バージョンのアルゴリズム設定を保存
