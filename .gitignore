@@ -53,7 +53,10 @@ scripts/.backfill_progress.json
 scripts/.backfill_schedule_cache.json
 scripts/.backfill_horse_progress.json
 scripts/.backfill_horse_id_cache.json
+scripts/.backfill_raceresult_progress.json
+scripts/.backfill_raceresult_rows_cache.json
 scripts/backfill_log.txt
+scripts/backfill_raceresult_log.txt
 scripts/horse_backfill_log.txt
 scripts/debug_netkeiba_search.js
 scripts/debug_horse_profile.js
