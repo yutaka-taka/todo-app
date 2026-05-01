@@ -106,6 +106,7 @@ export async function POST() {
         surface: r.surface,
         distance: r.distance,
         date: r.date,
+        trackCondition: r.trackCondition ?? null,
         results: r.results.map((res) => ({ horseName: res.horseName, finishPosition: res.finishPosition, popularity: res.popularity ?? null })),
       }))
     )
@@ -146,6 +147,10 @@ export async function POST() {
                 existing.raceNameData as Record<string, { races: number; places: number }>,
                 hs.raceNameData
               ),
+              trackCondData: mergeStatData(
+                existing.trackCondData as Record<string, { races: number; places: number }>,
+                hs.trackCondData
+              ),
               // 新バッチが既存より新しい場合のみ lastRace 系を上書き
               ...(hs.lastRaceDate >= (existing.lastRaceDate ?? new Date(0)) ? {
                 lastRaceDate: hs.lastRaceDate,
@@ -162,11 +167,12 @@ export async function POST() {
               totalPlaces: hs.totalPlaces,
               g1Races: hs.g1Races,
               g1Places: hs.g1Places,
-              distanceData: hs.distanceData,
-              venueData: hs.venueData,
-              surfaceData: hs.surfaceData,
-              raceNameData: hs.raceNameData,
-              lastRaceDate: hs.lastRaceDate,
+              distanceData:  hs.distanceData,
+              venueData:     hs.venueData,
+              surfaceData:   hs.surfaceData,
+              raceNameData:  hs.raceNameData,
+              trackCondData: hs.trackCondData,
+              lastRaceDate:  hs.lastRaceDate,
               lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
             },

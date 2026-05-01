@@ -80,6 +80,7 @@ interface EntryInput {
   lastThreeFurlong?: number | null  // 前走上がり3F（秒）
   runningStyle?: string | null      // 脚質: 逃/先/差/追
   oddsPopularity?: number | null    // 単勝人気順位（データ不足馬補正用）
+  oddsFloat?: number | null         // 単勝実オッズ（float、人気順位より細粒度）
 }
 
 interface RaceContext {
@@ -261,6 +262,12 @@ function getBloodlineBonus(
 // 表示値が現実に近づくよう調整。
 const RANK_CAPS = [55, 45, 36, 28, 23, 19, 16]
 
+// ========== グレード別フォーム品質係数 ==========
+// 前走グレードが高いほど同じ着順を高く評価。
+// 正規化方式: adjustedPos = rawPos / gradeFactor
+// G1 1着→0.5, G2 1着→0.67, G3 1着→0.83 に圧縮してスコアを底上げ
+const GRADE_FORM_FACTORS: Record<string, number> = { G1: 2.0, G2: 1.5, G3: 1.2 }
+
 // ========== (#5) 馬体重絶対値分析 ==========
 // 馬の基準体重（過去の平均的な出走時体重）からの乖離を評価
 function getWeightAbsoluteBonus(
@@ -419,8 +426,20 @@ function smoothedRate(places: number, races: number): number {
 }
 
 // 市場人気補正: 全馬対象。データ量でスケールを調整する。
-// G1連対率実績: 1人気≈60%, 2人気≈45%, 3人気≈35%, 4-5人気≈25%, 6-9人気≈15%, 10人気以下≈7%
-function getOddsBonus(oddsPopularity: number | null | undefined): number {
+// oddsFloat が渡された場合は実オッズ値から対数スケールで計算（同じ人気順位内の細粒度差別化）。
+// フォールバック: 人気順位のみ。G1連対率実績: 1人気≈60%, 2人気≈45%, 3人気≈35%, 4-5人気≈25%, 6-9人気≈15%, 10人気以下≈7%
+function getOddsBonus(oddsPopularity: number | null | undefined, oddsFloat?: number | null): number {
+  if (oddsFloat != null && oddsFloat > 0) {
+    // 実オッズ値から連続スコア（出力範囲は人気順位版と同等に合わせる）
+    if (oddsFloat < 2.0)  return 13   // 断然人気（odds < 2.0）
+    if (oddsFloat < 3.0)  return 10   // 明確な1番人気帯
+    if (oddsFloat < 4.5)  return 6    // 上位人気帯
+    if (oddsFloat < 7.0)  return 2    // 中位人気帯
+    if (oddsFloat < 10.0) return -1   // 中穴帯
+    if (oddsFloat < 20.0) return -4   // 穴帯
+    return -7                          // 大穴
+  }
+  // 人気順位フォールバック（blind最適化・オッズ未取得時）
   if (oddsPopularity == null) return 0
   if (oddsPopularity === 1)      return 12
   if (oddsPopularity === 2)      return 8
@@ -699,14 +718,14 @@ function buildScore(
     const ltfBonusRaw = getLastThreeFurlongBonus(entry.lastThreeFurlong, race.surface)
     partialBonus += Math.round(ltfBonusRaw * 0.5)
     // 人気補正（v340: データなし馬は市場人気を主信号として大胆に使う）
-    if (entry.oddsPopularity != null) {
-      const oddsRaw = getOddsBonus(entry.oddsPopularity)
+    if (entry.oddsPopularity != null || entry.oddsFloat != null) {
+      const oddsRaw = getOddsBonus(entry.oddsPopularity, entry.oddsFloat)
       partialBonus += Math.round(oddsRaw * 1.8)  // 旧1.4→1.8
-      if (entry.oddsPopularity <= 3) {
+      if (entry.oddsPopularity != null && entry.oddsPopularity <= 3) {
         notes.push(`${entry.oddsPopularity}番人気`)
         // 人気1-3位なら基底を底上げ（市場が高評価＝戦績不明でも実力者の証）
         baseScore += entry.oddsPopularity === 1 ? 14 : entry.oddsPopularity === 2 ? 10 : 7
-      } else if (entry.oddsPopularity <= 5) {
+      } else if (entry.oddsPopularity != null && entry.oddsPopularity <= 5) {
         baseScore += 3
       }
     }
@@ -739,6 +758,14 @@ function buildScore(
     const g1Smoothed = smoothedRate(stat.g1Places, stat.g1Races)
     const g1Weight = Math.min(stat.g1Races, 10) / 10 * 0.6
     effectiveBase = baseSmoothed * (1 - g1Weight) * 100 + g1Smoothed * g1Weight * 100
+  } else if (race.grade === 'G2' && stat.g2Races >= 1) {
+    const g2Smoothed = smoothedRate(stat.g2Places, stat.g2Races)
+    const g2Weight = Math.min(stat.g2Races, 10) / 10 * 0.5
+    effectiveBase = baseSmoothed * (1 - g2Weight) * 100 + g2Smoothed * g2Weight * 100
+  } else if (race.grade === 'G3' && stat.g3Races >= 1) {
+    const g3Smoothed = smoothedRate(stat.g3Places, stat.g3Races)
+    const g3Weight = Math.min(stat.g3Races, 10) / 10 * 0.4
+    effectiveBase = baseSmoothed * (1 - g3Weight) * 100 + g3Smoothed * g3Weight * 100
   }
 
   // v340: 少データ馬に人気ベースのpriorをブレンドする
@@ -762,13 +789,16 @@ function buildScore(
 
   if (stat.recentForm) {
     const positions = parseRecentForm(stat.recentForm)
+    const recentGradeList = (stat.recentGrades ?? '').split('-').filter(Boolean)
     if (positions.length > 0) {
       recentFormText = `直近: ${stat.recentForm}`
       const ws = [0.40, 0.25, 0.18, 0.12, 0.05]
       let wSum = 0, wTotal = 0
       for (let i = 0; i < Math.min(positions.length, 5); i++) {
         const w = ws[i] ?? 0.05
-        wSum += positions[i] * w
+        // グレード係数で着順を正規化: G1優勝→0.5, G3優勝→0.83相当
+        const gradeFactor = GRADE_FORM_FACTORS[recentGradeList[i] ?? ''] ?? 1.0
+        wSum += (positions[i] / gradeFactor) * w
         wTotal += w
       }
       const avgPos = wSum / wTotal
@@ -878,6 +908,7 @@ function buildScore(
     }
   }
 
+  // --- G1/G2/G3 重賞実績（グレード別に独立評価）---
   let g1Bonus = 0
   let g1Note = ''
   if (race.grade === 'G1') {
@@ -885,14 +916,19 @@ function buildScore(
       const overallRate = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
       const is3yoDebut = entry.age === 3 && stat.totalRaces >= 2
       if (is3yoDebut) {
-        // 3歳G1初挑戦: 良績なら初挑戦ペナルティを軽減（無敗の新鋭を正当評価）
         g1Bonus = overallRate >= 0.70 ? 3 : overallRate >= 0.50 ? 0 : overallRate >= 0.30 ? -3 : -6
-        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)  // 前哨戦連対でペナルティ緩和
+        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)
         g1Note = `3歳G1初挑戦(連対率${Math.round(overallRate*100)}%)`
       } else {
         g1Bonus = overallRate >= 0.45 ? -3 : overallRate >= 0.30 ? -5 : -8
-        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 5, 0)  // 前哨戦連対でペナルティ緩和
+        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 5, 0)
         g1Note = overallRate >= 0.30 ? `G1初挑戦(連対率${Math.round(overallRate*100)}%)` : 'G1初挑戦'
+      }
+      // G2実績でG1初挑戦ペナルティを緩和
+      if (stat.g2Races >= 2) {
+        const g2Rate = stat.g2Places / stat.g2Races
+        if (g2Rate >= 0.40) { g1Bonus = Math.min(g1Bonus + 5, 0); g1Note += '+G2高実績' }
+        else if (g2Rate >= 0.25) { g1Bonus = Math.min(g1Bonus + 3, 0); g1Note += '+G2実績' }
       }
     } else {
       const g1Rate = stat.g1Places / stat.g1Races
@@ -923,6 +959,52 @@ function buildScore(
       const credit = Math.min(sameDistCredit, 8)
       g1Bonus += credit
       if (credit > 0) g1Note += '+近距離G1'
+    }
+  } else if (race.grade === 'G2') {
+    // G2レース: g2Races/g2Places を主シグナルとして使用
+    if (stat.g2Races > 0) {
+      const g2Rate = stat.g2Places / stat.g2Races
+      const sf = Math.min(stat.g2Races, 8) / 8
+      if (g2Rate >= 0.40)       { g1Bonus = Math.round(14 * sf); g1Note = `G2で${stat.g2Races}戦${stat.g2Places}連対(高実績)` }
+      else if (g2Rate >= 0.20)  { g1Bonus = Math.round(7 * sf);  g1Note = `G2で${stat.g2Races}戦${stat.g2Places}連対` }
+      else if (stat.g2Races >= 3) { g1Bonus = -6; g1Note = `G2で${stat.g2Races}戦連対なし` }
+      else                      { g1Bonus = -2; g1Note = `G2で${stat.g2Races}戦連対なし` }
+    } else if (stat.g1Races > 0) {
+      // G1実績馬のG2出走（格下戦）
+      const g1Rate = stat.g1Places / stat.g1Races
+      if (g1Rate >= 0.30)         { g1Bonus = 8; g1Note = `G1連対実績あり(G2初)` }
+      else if (stat.g1Races >= 2) { g1Bonus = 2; g1Note = `G1経験あり(G2初)` }
+    } else {
+      // G2/G1未経験: ペナルティ（G3実績で緩和）
+      const overallRate = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
+      g1Bonus = overallRate >= 0.45 ? -2 : overallRate >= 0.30 ? -4 : -6
+      g1Note = `G2初挑戦(連対率${Math.round(overallRate*100)}%)`
+      if (stat.g3Races >= 2) {
+        const g3Rate = stat.g3Places / stat.g3Races
+        if (g3Rate >= 0.40) { g1Bonus = Math.min(g1Bonus + 4, 0); g1Note += '+G3高実績' }
+        else if (g3Rate >= 0.25) { g1Bonus = Math.min(g1Bonus + 2, 0); g1Note += '+G3実績' }
+      }
+    }
+  } else if (race.grade === 'G3') {
+    // G3レース: g3Races/g3Places を主シグナルとして使用
+    if (stat.g3Races > 0) {
+      const g3Rate = stat.g3Places / stat.g3Races
+      const sf = Math.min(stat.g3Races, 8) / 8
+      if (g3Rate >= 0.40)       { g1Bonus = Math.round(12 * sf); g1Note = `G3で${stat.g3Races}戦${stat.g3Places}連対(得意)` }
+      else if (g3Rate >= 0.20)  { g1Bonus = Math.round(5 * sf);  g1Note = `G3で${stat.g3Races}戦${stat.g3Places}連対` }
+      else if (stat.g3Races >= 3) { g1Bonus = -5; g1Note = `G3で${stat.g3Races}戦連対なし` }
+      else                      { g1Bonus = -1; g1Note = `G3で${stat.g3Races}戦連対なし` }
+    } else if (stat.g2Races > 0 || stat.g1Races > 0) {
+      // 格上経験馬のG3出走（降格/転戦）
+      const higherRaces  = stat.g2Races > 0 ? stat.g2Races  : stat.g1Races
+      const higherPlaces = stat.g2Races > 0 ? stat.g2Places : stat.g1Places
+      if (higherPlaces / higherRaces >= 0.25) { g1Bonus = 6; g1Note = `格上実績あり(G3初)` }
+      else                                    { g1Bonus = 2; g1Note = `格上経験あり(G3初)` }
+    } else {
+      // G3以上未経験
+      const overallRate = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
+      g1Bonus = overallRate >= 0.50 ? -1 : overallRate >= 0.35 ? -3 : -5
+      g1Note = `G3初挑戦(連対率${Math.round(overallRate*100)}%)`
     }
   }
 
@@ -976,15 +1058,18 @@ function buildScore(
   let trendBonus = 0
   if (stat.recentForm) {
     const tPos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
+    const tGrades = (stat.recentGrades ?? '').split('-').filter(Boolean)
     if (tPos.length >= 4) {
-      const recentAvg = (tPos[0] + tPos[1]) / 2
-      const olderAvg  = (tPos[2] + tPos[3]) / 2
+      // グレード係数で着順を正規化してトレンドを評価
+      const adj = (i: number) => tPos[i] / (GRADE_FORM_FACTORS[tGrades[i] ?? ''] ?? 1.0)
+      const recentAvg = (adj(0) + adj(1)) / 2
+      const olderAvg  = (adj(2) + adj(3)) / 2
       if (recentAvg < olderAvg - 2.5) trendBonus = 9
       else if (recentAvg < olderAvg - 1.5) trendBonus = 6
       else if (recentAvg < olderAvg - 0.5) trendBonus = 3
       else if (recentAvg > olderAvg + 2) trendBonus = -5
     }
-    // 直近2戦が連対 + 過去2戦は2着外 → 開花パターン
+    // 直近2戦が連対 + 過去2戦は2着外 → 開花パターン（着順はraw値で判定）
     if (tPos.length >= 4 && tPos[0] <= 2 && tPos[1] <= 2 && tPos[2] >= 4 && tPos[3] >= 4) {
       trendBonus = Math.max(trendBonus, 7)
     }
@@ -1018,18 +1103,33 @@ function buildScore(
 
   // --- 馬場状態 ---
   let trackCondBonus = 0
-  if (race.trackCondition && race.trackCondition !== '良') {
-    if (race.surface === '芝') {
-      if (race.trackCondition === '不良') {
-        const overallRate = stat.totalPlaces / stat.totalRaces
-        trackCondBonus = overallRate >= 0.40 ? 3 : overallRate >= 0.25 ? 0 : -5
-      } else if (race.trackCondition === '重') {
-        const overallRate = stat.totalPlaces / stat.totalRaces
-        trackCondBonus = overallRate >= 0.40 ? 2 : overallRate >= 0.20 ? 0 : -3
+  const trackCondData = (stat.trackCondData as StatRecord | null) ?? {}
+  if (race.trackCondition) {
+    const condStat = trackCondData[race.trackCondition]
+    const overallRate = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
+    if (condStat && condStat.races >= 2) {
+      // 実績あり: この馬場での連対率 vs 全体連対率の差分でボーナス計算
+      const condRate = condStat.places / condStat.races
+      const sf = Math.min(condStat.races, 8) / 8
+      const diff = condRate - overallRate
+      if (diff >= 0.20 && condRate >= 0.35)          trackCondBonus = Math.round(10 * sf)
+      else if (diff >= 0.10)                          trackCondBonus = Math.round(5 * sf)
+      else if (diff <= -0.20 && condStat.races >= 3)  trackCondBonus = -Math.round(8 * sf)
+      else if (diff <= -0.10 && condStat.races >= 3)  trackCondBonus = -Math.round(4 * sf)
+    } else if (race.trackCondition !== '良') {
+      // 実績不足時フォールバック: 全体連対率から推定
+      if (race.surface === '芝') {
+        if (race.trackCondition === '不良') {
+          trackCondBonus = overallRate >= 0.40 ? 3 : overallRate >= 0.25 ? 0 : -5
+        } else if (race.trackCondition === '重') {
+          trackCondBonus = overallRate >= 0.40 ? 2 : overallRate >= 0.20 ? 0 : -3
+        } else if (race.trackCondition === '稍重') {
+          trackCondBonus = overallRate >= 0.40 ? 1 : 0
+        }
+      } else if (race.surface === 'ダート') {
+        if (race.trackCondition === '重' || race.trackCondition === '不良') trackCondBonus = 3
+        else if (race.trackCondition === '稍重') trackCondBonus = 1
       }
-    } else if (race.surface === 'ダート') {
-      if (race.trackCondition === '重' || race.trackCondition === '不良') trackCondBonus = 3
-      else if (race.trackCondition === '稍重') trackCondBonus = 1
     }
   }
 
@@ -1078,7 +1178,7 @@ function buildScore(
   const wPace          = Math.round(paceBonus            * weights.paceMult)
 
   // 人気補正（全馬対象）: データが豊富な馬ほどオッズへの依存を下げる
-  const oddsRaw = getOddsBonus(entry.oddsPopularity)
+  const oddsRaw = getOddsBonus(entry.oddsPopularity, entry.oddsFloat)
   const oddsDataScale = stat.totalRaces >= 10 ? 0.35 : stat.totalRaces >= 4 ? 0.65 : 1.0
   const wOdds = Math.round(oddsRaw * oddsDataScale * weights.oddsMult)
 

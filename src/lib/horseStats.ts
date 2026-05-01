@@ -5,6 +5,7 @@ export type RaceForStats = {
   surface: string
   distance: number
   date: Date
+  trackCondition?: string | null
   results: Array<{ horseName: string; finishPosition: number; popularity?: number | null }>
 }
 
@@ -18,6 +19,7 @@ export type HorseStatData = {
   venueData: Record<string, { races: number; places: number }>
   surfaceData: Record<string, { races: number; places: number }>
   raceNameData: Record<string, { races: number; places: number }>
+  trackCondData: Record<string, { races: number; places: number }>
   lastRaceDate: Date
   lastRacePopularity?: number | null
   recentForm?: string // "1-2-1-3-2" newest first
@@ -45,7 +47,7 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
           horseName: result.horseName,
           totalRaces: 0, totalPlaces: 0,
           g1Races: 0, g1Places: 0,
-          distanceData: {}, venueData: {}, surfaceData: {}, raceNameData: {},
+          distanceData: {}, venueData: {}, surfaceData: {}, raceNameData: {}, trackCondData: {},
           lastRaceDate: race.date,
         })
       }
@@ -70,6 +72,13 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
       if (!stat.raceNameData[raceKey]) stat.raceNameData[raceKey] = { races: 0, places: 0 }
       stat.raceNameData[raceKey].races++
       if (placed) stat.raceNameData[raceKey].places++
+
+      if (race.trackCondition) {
+        const tc = race.trackCondition
+        if (!stat.trackCondData[tc]) stat.trackCondData[tc] = { races: 0, places: 0 }
+        stat.trackCondData[tc].races++
+        if (placed) stat.trackCondData[tc].places++
+      }
 
       if (race.date > stat.lastRaceDate) stat.lastRaceDate = race.date
 

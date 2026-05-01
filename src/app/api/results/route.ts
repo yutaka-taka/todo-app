@@ -186,12 +186,13 @@ export async function POST(request: NextRequest) {
       raceId,
       winnerName: firstName,
       secondName,
-      raceName: race.name,
-      grade:    race.grade,
-      venue:    race.venue,
-      surface:  race.surface,
-      distance: race.distance,
-      raceDate: race.date,
+      raceName:       race.name,
+      grade:          race.grade,
+      venue:          race.venue,
+      surface:        race.surface,
+      distance:       race.distance,
+      raceDate:       race.date,
+      trackCondition: race.trackCondition ?? null,
     })
 
     // 統計再計算

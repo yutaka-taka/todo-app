@@ -11,6 +11,10 @@ type StatRecord = Record<string, { races: number; places: number }>
 interface InsightsJson {
   keyFindings?: string[]
   localWeights?: Partial<LocalWeights>
+  gradeWeights?: {
+    G1?: Partial<LocalWeights>
+    G2G3?: Partial<LocalWeights>
+  }
   localAccuracy?: number
   lastLearnedAt?: string
 }
@@ -144,6 +148,11 @@ function prependForm(existingForm: string | null, position: number, maxLen = 7):
   return [position, ...parts].slice(0, maxLen).join('-')
 }
 
+function prependGrades(existingGrades: string | null, grade: string, maxLen = 7): string {
+  const parts = existingGrades ? existingGrades.split('-').filter(Boolean) : []
+  return [grade, ...parts].slice(0, maxLen).join('-')
+}
+
 // ========== メイン関数 ==========
 
 export async function autoLearnFromNewResult({
@@ -156,6 +165,7 @@ export async function autoLearnFromNewResult({
   surface,
   distance,
   raceDate,
+  trackCondition,
 }: {
   raceId?: string
   winnerName: string
@@ -166,6 +176,7 @@ export async function autoLearnFromNewResult({
   surface: string
   distance: number
   raceDate: Date
+  trackCondition?: string | null
 }): Promise<{
   horsesUpdated: number
   weightsUpdated: boolean
@@ -173,6 +184,8 @@ export async function autoLearnFromNewResult({
   localAccuracy: number
 }> {
   const isG1 = grade === 'G1'
+  const isG2 = grade === 'G2'
+  const isG3 = grade === 'G3'
   const dk = String(distance)
   const raceKey = raceName.replace(/\s*\d{4}年?\s*$/, '').trim()
   let horsesUpdated = 0
@@ -189,11 +202,17 @@ export async function autoLearnFromNewResult({
             totalPlaces:  existing.totalPlaces + 1,
             g1Races:      isG1 ? existing.g1Races + 1  : existing.g1Races,
             g1Places:     isG1 ? existing.g1Places + 1 : existing.g1Places,
-            distanceData: mergeStatRecord(existing.distanceData as StatRecord, dk, true),
-            venueData:    mergeStatRecord(existing.venueData    as StatRecord, venue, true),
-            surfaceData:  mergeStatRecord(existing.surfaceData  as StatRecord, surface, true),
-            raceNameData: mergeStatRecord(existing.raceNameData as StatRecord, raceKey, true),
+            g2Races:      isG2 ? existing.g2Races + 1  : existing.g2Races,
+            g2Places:     isG2 ? existing.g2Places + 1 : existing.g2Places,
+            g3Races:      isG3 ? existing.g3Races + 1  : existing.g3Races,
+            g3Places:     isG3 ? existing.g3Places + 1 : existing.g3Places,
+            distanceData:  mergeStatRecord(existing.distanceData  as StatRecord, dk, true),
+            venueData:     mergeStatRecord(existing.venueData     as StatRecord, venue, true),
+            surfaceData:   mergeStatRecord(existing.surfaceData   as StatRecord, surface, true),
+            raceNameData:  mergeStatRecord(existing.raceNameData  as StatRecord, raceKey, true),
+            ...(trackCondition ? { trackCondData: mergeStatRecord(existing.trackCondData as StatRecord ?? {}, trackCondition, true) } : {}),
             recentForm:   prependForm(existing.recentForm, pos),
+            recentGrades: prependGrades(existing.recentGrades ?? null, grade),
             lastRaceDate: raceDate,
           },
         })
@@ -205,11 +224,17 @@ export async function autoLearnFromNewResult({
             totalPlaces:  1,
             g1Races:      isG1 ? 1 : 0,
             g1Places:     isG1 ? 1 : 0,
-            distanceData: { [dk]: { races: 1, places: 1 } },
-            venueData:    { [venue]: { races: 1, places: 1 } },
-            surfaceData:  { [surface]: { races: 1, places: 1 } },
-            raceNameData: { [raceKey]: { races: 1, places: 1 } },
+            g2Races:      isG2 ? 1 : 0,
+            g2Places:     isG2 ? 1 : 0,
+            g3Races:      isG3 ? 1 : 0,
+            g3Places:     isG3 ? 1 : 0,
+            distanceData:  { [dk]: { races: 1, places: 1 } },
+            venueData:     { [venue]: { races: 1, places: 1 } },
+            surfaceData:   { [surface]: { races: 1, places: 1 } },
+            raceNameData:  { [raceKey]: { races: 1, places: 1 } },
+            trackCondData: trackCondition ? { [trackCondition]: { races: 1, places: 1 } } : {},
             recentForm:   String(pos),
+            recentGrades: grade,
             lastRaceDate: raceDate,
           },
         })
@@ -234,10 +259,13 @@ export async function autoLearnFromNewResult({
             data: {
               totalRaces:   existing.totalRaces + 1,
               g1Races:      isG1 ? existing.g1Races + 1 : existing.g1Races,
-              distanceData: mergeStatRecord(existing.distanceData as StatRecord, dk, false),
-              venueData:    mergeStatRecord(existing.venueData    as StatRecord, venue, false),
-              surfaceData:  mergeStatRecord(existing.surfaceData  as StatRecord, surface, false),
-              raceNameData: mergeStatRecord(existing.raceNameData as StatRecord, raceKey, false),
+              g2Races:      isG2 ? existing.g2Races + 1 : existing.g2Races,
+              g3Races:      isG3 ? existing.g3Races + 1 : existing.g3Races,
+              distanceData:  mergeStatRecord(existing.distanceData  as StatRecord, dk, false),
+              venueData:     mergeStatRecord(existing.venueData     as StatRecord, venue, false),
+              surfaceData:   mergeStatRecord(existing.surfaceData   as StatRecord, surface, false),
+              raceNameData:  mergeStatRecord(existing.raceNameData  as StatRecord, raceKey, false),
+              ...(trackCondition ? { trackCondData: mergeStatRecord(existing.trackCondData as StatRecord ?? {}, trackCondition, false) } : {}),
               lastRaceDate: raceDate,
             },
           })
@@ -324,7 +352,9 @@ export async function autoLearnFromNewResult({
   return { horsesUpdated, weightsUpdated, newVersion, localAccuracy }
 }
 
-export async function getLocalWeights(): Promise<LocalWeights> {
+// grade を渡すとグレード別最適重みを返す（G1 or G2/G3）。
+// 未設定時は全グレード共通重み（localWeights）にフォールバック。
+export async function getLocalWeights(grade?: string): Promise<LocalWeights> {
   try {
     const config = await prisma.algorithmConfig.findFirst({
       where: { isActive: true },
@@ -334,7 +364,16 @@ export async function getLocalWeights(): Promise<LocalWeights> {
       const parsed = JSON.parse(config.insights as string) as unknown
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const ins = parsed as InsightsJson
-        if (ins.localWeights) return { ...DEFAULT_WEIGHTS, ...ins.localWeights }
+        const base: LocalWeights = ins.localWeights
+          ? { ...DEFAULT_WEIGHTS, ...ins.localWeights }
+          : { ...DEFAULT_WEIGHTS }
+        // グレード別重みが存在する場合は共通重みに上書きマージ
+        if (grade && ins.gradeWeights) {
+          const gradeKey = grade === 'G1' ? 'G1' : 'G2G3'
+          const gradeSpecific = ins.gradeWeights[gradeKey]
+          if (gradeSpecific) return { ...base, ...gradeSpecific }
+        }
+        return base
       }
     }
   } catch { /* fallback to defaults */ }

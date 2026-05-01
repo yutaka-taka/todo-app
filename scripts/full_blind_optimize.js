@@ -17,6 +17,11 @@ function loadEnv(f) {
 }
 loadEnv('.env'); loadEnv('.env.local')
 
+// CLIグレードフィルタ: node full_blind_optimize.js --grade G1 | --grade G2G3
+// 省略時は全グレード(G1/G2/G3)を評価（既存動作）
+const GRADE_ARG_IDX = process.argv.indexOf('--grade')
+const GRADE_FILTER = GRADE_ARG_IDX >= 0 ? (process.argv[GRADE_ARG_IDX + 1] ?? null) : null
+
 const prisma = new PrismaClient()
 
 const DEFAULT_WEIGHTS = {
@@ -266,6 +271,9 @@ function getBloodlineBonus(stat, distance, surface) {
   return Math.max(-8, Math.min(12, total))
 }
 
+// グレード別フォーム品質係数（scorer.ts と同期）
+const GRADE_FORM_FACTORS = { G1: 2.0, G2: 1.5, G3: 1.2 }
+
 // 設定可能パラメータ
 const ENGINE_DEFAULTS = {
   cappedBaseMax: 50,                       // 旧60→50（calibration）
@@ -321,6 +329,14 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap, eng) {
     const g1Rate = smoothedRate(stat.g1Places, stat.g1Races)
     const w = Math.min(stat.g1Races, 10) / 10 * 0.6
     effectiveBase = laplaceBase * (1 - w) + g1Rate * w
+  } else if (race.grade === 'G2' && stat.g2Races >= 1) {
+    const g2Rate = smoothedRate(stat.g2Places, stat.g2Races)
+    const g2Weight = Math.min(stat.g2Races, 10) / 10 * 0.5
+    effectiveBase = laplaceBase * (1 - g2Weight) + g2Rate * g2Weight
+  } else if (race.grade === 'G3' && stat.g3Races >= 1) {
+    const g3Rate = smoothedRate(stat.g3Places, stat.g3Races)
+    const g3Weight = Math.min(stat.g3Races, 10) / 10 * 0.4
+    effectiveBase = laplaceBase * (1 - g3Weight) + g3Rate * g3Weight
   }
   // v340: 少データ馬に人気ベースのpriorをブレンドする
   if (stat.totalRaces < 4 && entry.popularity != null) {
@@ -338,7 +354,7 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap, eng) {
   const bonuses = {}
 
   let hasPrepWin = false
-  if (stat.g1Races === 0 && race.name && stat.raceNameData) {
+  if (race.name && stat.raceNameData) {
     const baseN = race.name.replace(/\s*\d{4}年?\s*$/, '').trim()
     const prepList = PREP_RACES[baseN] || []
     for (const p of prepList) {
@@ -348,32 +364,73 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap, eng) {
   }
 
   let g1Bonus = 0
-  if (stat.g1Races === 0) {
-    const r = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
-    if (age === 3 && stat.totalRaces >= 2) {
-      g1Bonus = r >= 0.70 ? 3 : r >= 0.50 ? 0 : r >= 0.30 ? -3 : -6
-      if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)
+  if (race.grade === 'G1') {
+    if (stat.g1Races === 0) {
+      const r = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
+      if (age === 3 && stat.totalRaces >= 2) {
+        g1Bonus = r >= 0.70 ? 3 : r >= 0.50 ? 0 : r >= 0.30 ? -3 : -6
+        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)
+      } else {
+        g1Bonus = r >= 0.45 ? -3 : r >= 0.30 ? -5 : -8
+        if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 5, 0)
+      }
+      if (stat.g2Races >= 2) {
+        const g2r = stat.g2Places / stat.g2Races
+        const soften = g2r >= 0.40 ? 5 : g2r >= 0.20 ? 3 : 0
+        if (soften > 0 && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + soften, 0)
+      }
     } else {
-      g1Bonus = r >= 0.45 ? -3 : r >= 0.30 ? -5 : -8
-      if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 5, 0)
+      const r = stat.g1Places / stat.g1Races
+      if (r >= 0.4)       g1Bonus = 18
+      else if (r >= 0.2)  g1Bonus = 8
+      else if (stat.g1Races >= 3) g1Bonus = -8
+      else                g1Bonus = -1
+      let sameDistCredit = 0
+      const distData2 = stat.distanceData || {}
+      for (const [dk2, dv2] of Object.entries(distData2)) {
+        const d2 = parseInt(dk2, 10)
+        if (isNaN(d2) || d2 === race.distance) continue
+        if (Math.abs(d2 - race.distance) <= 100 && dv2.places > 0) sameDistCredit = Math.max(sameDistCredit, 6)
+      }
+      const venueData2 = stat.venueData || {}
+      const vS = venueData2[race.venue]
+      if (vS && vS.places > 0 && stat.g1Places > 0) sameDistCredit = Math.max(sameDistCredit, 5)
+      g1Bonus += Math.min(sameDistCredit, 8)
     }
-  } else {
-    const r = stat.g1Places / stat.g1Races
-    if (r >= 0.4)       g1Bonus = 18
-    else if (r >= 0.2)  g1Bonus = 8
-    else if (stat.g1Races >= 3) g1Bonus = -8
-    else                g1Bonus = -1
-    let sameDistCredit = 0
-    const distData = stat.distanceData || {}
-    for (const [dk2, dv2] of Object.entries(distData)) {
-      const d2 = parseInt(dk2, 10)
-      if (isNaN(d2) || d2 === race.distance) continue
-      if (Math.abs(d2 - race.distance) <= 100 && dv2.places > 0) sameDistCredit = Math.max(sameDistCredit, 6)
+  } else if (race.grade === 'G2') {
+    if (stat.g2Races >= 1) {
+      const r = stat.g2Places / stat.g2Races
+      g1Bonus = r >= 0.4 ? 14 : r >= 0.2 ? 6 : stat.g2Races >= 3 ? -6 : -1
+    } else if (stat.g1Races >= 1) {
+      const r = stat.g1Places / stat.g1Races
+      g1Bonus = r >= 0.4 ? 10 : r >= 0.2 ? 4 : -2
+    } else {
+      const r = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
+      if (age === 3 && stat.totalRaces >= 2) {
+        g1Bonus = r >= 0.60 ? 2 : r >= 0.40 ? 0 : -2
+      } else {
+        g1Bonus = r >= 0.40 ? -2 : r >= 0.25 ? -4 : -6
+      }
+      if (stat.g3Races >= 2) {
+        const g3r = stat.g3Places / stat.g3Races
+        if (g3r >= 0.40 && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)
+        else if (g3r >= 0.20 && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 2, 0)
+      }
+      if (hasPrepWin && g1Bonus < 0) g1Bonus = Math.min(g1Bonus + 4, 0)
     }
-    const venueData2 = stat.venueData || {}
-    const vS = venueData2[race.venue]
-    if (vS && vS.places > 0 && stat.g1Places > 0) sameDistCredit = Math.max(sameDistCredit, 5)
-    g1Bonus += Math.min(sameDistCredit, 8)
+  } else if (race.grade === 'G3') {
+    if (stat.g3Races >= 1) {
+      const r = stat.g3Places / stat.g3Races
+      g1Bonus = r >= 0.4 ? 10 : r >= 0.2 ? 4 : stat.g3Races >= 3 ? -4 : 0
+    } else if (stat.g2Races >= 1 || stat.g1Races >= 1) {
+      const g2r = stat.g2Races >= 1 ? stat.g2Places / stat.g2Races : 0
+      const g1r = stat.g1Races >= 1 ? stat.g1Places / stat.g1Races : 0
+      const topRate = Math.max(g2r, g1r)
+      g1Bonus = topRate >= 0.4 ? 6 : topRate >= 0.2 ? 2 : -1
+    } else {
+      const r = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
+      g1Bonus = age === 3 ? (r >= 0.60 ? 2 : r >= 0.40 ? 0 : -1) : (r >= 0.40 ? -1 : r >= 0.25 ? -3 : -5)
+    }
   }
   bonuses.g1 = Math.round(g1Bonus * (weights.g1Mult || 1))
 
@@ -419,10 +476,14 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap, eng) {
   let formBonus = 0
   if (stat.recentForm) {
     const pos = stat.recentForm.split('-').map(Number).filter(n => !isNaN(n) && n > 0)
+    const grades = stat.recentGrades ? stat.recentGrades.split('-') : []
     if (pos.length > 0) {
       const ws = [0.40, 0.25, 0.18, 0.12, 0.05]
       let s = 0, t = 0
-      for (let i = 0; i < Math.min(pos.length, 5); i++) { s += pos[i] * ws[i]; t += ws[i] }
+      for (let i = 0; i < Math.min(pos.length, 5); i++) {
+        const gf = GRADE_FORM_FACTORS[grades[i]] ?? 1.0
+        s += (pos[i] / gf) * ws[i]; t += ws[i]
+      }
       const avg = s / t
       if (avg <= 1.4)      formBonus = 24
       else if (avg <= 1.8) formBonus = 20
@@ -444,13 +505,16 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap, eng) {
   let trendBonus = 0
   if (stat.recentForm) {
     const pos = stat.recentForm.split('-').map(Number).filter(n => !isNaN(n) && n > 0)
+    const tGrades = stat.recentGrades ? stat.recentGrades.split('-') : []
     if (pos.length >= 4) {
-      const ra = (pos[0] + pos[1]) / 2, oa = (pos[2] + pos[3]) / 2
+      const adj = (i) => pos[i] / (GRADE_FORM_FACTORS[tGrades[i]] ?? 1.0)
+      const ra = (adj(0) + adj(1)) / 2, oa = (adj(2) + adj(3)) / 2
       if (ra < oa - 2.5) trendBonus = 9
       else if (ra < oa - 1.5) trendBonus = 6
       else if (ra < oa - 0.5) trendBonus = 3
       else if (ra > oa + 2) trendBonus = -5
     }
+    // 開花パターン（着順はraw値で判定）
     if (pos.length >= 4 && pos[0] <= 2 && pos[1] <= 2 && pos[2] >= 4 && pos[3] >= 4) {
       trendBonus = Math.max(trendBonus, 7)
     }
@@ -492,20 +556,28 @@ function buildScore(entry, race, stat, weights, jockeyStatsMap, eng) {
   bonuses.prep = prepBonus
 
   let trackCondBonus = 0
-  if (race.trackCondition && race.trackCondition !== '良') {
+  if (race.trackCondition) {
     const overallRate = stat.totalRaces > 0 ? stat.totalPlaces / stat.totalRaces : 0
-    if (race.surface === '芝') {
-      if (race.trackCondition === '不良')  trackCondBonus = overallRate >= 0.40 ? 3 : overallRate >= 0.25 ? 0 : -5
-      else if (race.trackCondition === '重') trackCondBonus = overallRate >= 0.40 ? 2 : overallRate >= 0.20 ? 0 : -3
-    } else if (race.surface === 'ダート') {
-      if (race.trackCondition === '重' || race.trackCondition === '不良') trackCondBonus = 3
-    }
-    if ((race.trackCondition === '重' || race.trackCondition === '不良') && stat.heavyTrackData) {
-      const htk = stat.heavyTrackData[race.trackCondition] || stat.heavyTrackData['重'] || null
-      if (htk && htk.races >= 2) {
-        const htRate = htk.places / htk.races
-        if (htRate >= overallRate + 0.25 && htRate >= 0.40) trackCondBonus += 8
-        else if (htRate >= overallRate + 0.15 && htRate >= 0.30) trackCondBonus += 4
+    const trackCondData = stat.trackCondData || {}
+    const condStat = trackCondData[race.trackCondition]
+    if (condStat && condStat.races >= 2) {
+      // 実績あり: この馬場での連対率 vs 全体連対率の差分でボーナス計算
+      const condRate = condStat.places / condStat.races
+      const sf = Math.min(condStat.races, 8) / 8
+      const diff = condRate - overallRate
+      if (diff >= 0.20 && condRate >= 0.35)          trackCondBonus = Math.round(10 * sf)
+      else if (diff >= 0.10)                          trackCondBonus = Math.round(5 * sf)
+      else if (diff <= -0.20 && condStat.races >= 3)  trackCondBonus = -Math.round(8 * sf)
+      else if (diff <= -0.10 && condStat.races >= 3)  trackCondBonus = -Math.round(4 * sf)
+    } else if (race.trackCondition !== '良') {
+      // 実績不足時フォールバック
+      if (race.surface === '芝') {
+        if (race.trackCondition === '不良')    trackCondBonus = overallRate >= 0.40 ? 3 : overallRate >= 0.25 ? 0 : -5
+        else if (race.trackCondition === '重') trackCondBonus = overallRate >= 0.40 ? 2 : overallRate >= 0.20 ? 0 : -3
+        else if (race.trackCondition === '稍重') trackCondBonus = overallRate >= 0.40 ? 1 : 0
+      } else if (race.surface === 'ダート') {
+        if (race.trackCondition === '重' || race.trackCondition === '不良') trackCondBonus = 3
+        else if (race.trackCondition === '稍重') trackCondBonus = 1
       }
     }
   }
@@ -584,7 +656,9 @@ async function loadHistorical() {
   return { pedigreeMap, allRaces }
 }
 
-const EVAL_GRADES = new Set(['G1', 'G2', 'G3'])
+const EVAL_GRADES = GRADE_FILTER === 'G1'  ? new Set(['G1'])
+                 : GRADE_FILTER === 'G2G3' ? new Set(['G2', 'G3'])
+                 : new Set(['G1', 'G2', 'G3'])
 
 function runBlind(weights, eng, allRaces, pedigreeMap) {
   const statsMap = new Map()
@@ -646,15 +720,19 @@ function runBlind(weights, eng, allRaces, pedigreeMap) {
       const placed = result.finishPosition <= 2
       if (!statsMap.has(result.horseName)) {
         statsMap.set(result.horseName, {
-          totalRaces: 0, totalPlaces: 0, g1Races: 0, g1Places: 0,
-          distanceData: {}, venueData: {}, surfaceData: {}, raceNameData: {},
-          recentForm: null, lastRaceDate: null, lastRacePopularity: null,
-          heavyTrackData: {},
+          totalRaces: 0, totalPlaces: 0,
+          g1Races: 0, g1Places: 0,
+          g2Races: 0, g2Places: 0,
+          g3Races: 0, g3Places: 0,
+          distanceData: {}, venueData: {}, surfaceData: {}, raceNameData: {}, trackCondData: {},
+          recentForm: null, recentGrades: null, lastRaceDate: null, lastRacePopularity: null,
         })
       }
       const s = statsMap.get(result.horseName)
       s.totalRaces++; if (placed) s.totalPlaces++
       if (race.grade === 'G1') { s.g1Races++; if (placed) s.g1Places++ }
+      if (race.grade === 'G2') { s.g2Races++; if (placed) s.g2Places++ }
+      if (race.grade === 'G3') { s.g3Races++; if (placed) s.g3Places++ }
       const dk = String(race.distance)
       if (!s.distanceData[dk]) s.distanceData[dk] = { races: 0, places: 0 }
       s.distanceData[dk].races++; if (placed) s.distanceData[dk].places++
@@ -665,16 +743,17 @@ function runBlind(weights, eng, allRaces, pedigreeMap) {
       const raceKey = race.name.replace(/\s*\d{4}年?\s*$/, '').trim()
       if (!s.raceNameData[raceKey]) s.raceNameData[raceKey] = { races: 0, places: 0 }
       s.raceNameData[raceKey].races++; if (placed) s.raceNameData[raceKey].places++
-      if (race.trackCondition === '重' || race.trackCondition === '不良') {
+      if (race.trackCondition) {
         const tc = race.trackCondition
-        if (!s.heavyTrackData[tc]) s.heavyTrackData[tc] = { races: 0, places: 0 }
-        s.heavyTrackData[tc].races++; if (placed) s.heavyTrackData[tc].places++
+        if (!s.trackCondData[tc]) s.trackCondData[tc] = { races: 0, places: 0 }
+        s.trackCondData[tc].races++; if (placed) s.trackCondData[tc].places++
       }
       if (!finishesMap.has(result.horseName)) finishesMap.set(result.horseName, [])
-      finishesMap.get(result.horseName).push({ date: race.date.getTime(), position: result.finishPosition })
+      finishesMap.get(result.horseName).push({ date: race.date.getTime(), position: result.finishPosition, grade: race.grade })
       const finishes = finishesMap.get(result.horseName)
       finishes.sort((a, b) => b.date - a.date)
-      s.recentForm = finishes.slice(0, 7).map(f => f.position).join('-')
+      s.recentForm   = finishes.slice(0, 7).map(f => f.position).join('-')
+      s.recentGrades = finishes.slice(0, 7).map(f => f.grade).join('-')
       s.lastRaceDate = race.date
       if (result.popularity != null) s.lastRacePopularity = result.popularity
     }
@@ -697,7 +776,8 @@ function runBlind(weights, eng, allRaces, pedigreeMap) {
 }
 
 async function main() {
-  console.log('=== 全因子真ブラインド最適化（v337 ベースライン測定）===\n')
+  const filterLabel = GRADE_FILTER ? `(${GRADE_FILTER}専用)` : '(全G1/G2/G3)'
+  console.log(`=== 全因子真ブラインド最適化 ${filterLabel} ===\n`)
 
   const algoCfg = await prisma.algorithmConfig.findFirst({ orderBy: { version: 'desc' } })
   let weights = { ...DEFAULT_WEIGHTS }
@@ -809,26 +889,60 @@ async function main() {
   // ====== AlgorithmConfig 更新 ======
   if (process.argv.includes('--save')) {
     console.log('\n--- AlgorithmConfig 保存 ---')
-    const newVersion = (algoCfg?.version || 250) + 1
+    // 現在アクティブなconfigのinsightsを読み込んでマージ（gradeWeightsを保持するため）
+    const activeCfg = await prisma.algorithmConfig.findFirst({ where: { isActive: true }, orderBy: { version: 'desc' } })
+    let currentInsights = {}
+    if (activeCfg?.insights) { try { currentInsights = JSON.parse(activeCfg.insights) } catch {} }
+    const newVersion = (activeCfg?.version ?? algoCfg?.version ?? 250) + 1
+
+    let updatedInsights, saveLabel
+    if (GRADE_FILTER === 'G1') {
+      // G1専用重みを gradeWeights.G1 に保存（他グレードの重みは保持）
+      updatedInsights = {
+        ...currentInsights,
+        gradeWeights: { ...(currentInsights.gradeWeights || {}), G1: best.w },
+        lastLearnedAt: new Date().toISOString(),
+      }
+      saveLabel = 'G1専用重み'
+    } else if (GRADE_FILTER === 'G2G3') {
+      // G2/G3専用重みを gradeWeights.G2G3 に保存
+      updatedInsights = {
+        ...currentInsights,
+        gradeWeights: { ...(currentInsights.gradeWeights || {}), G2G3: best.w },
+        lastLearnedAt: new Date().toISOString(),
+      }
+      saveLabel = 'G2G3専用重み'
+    } else {
+      // 全グレード共通重みを localWeights に保存（既存動作）
+      updatedInsights = {
+        ...currentInsights,
+        localWeights: best.w,
+        engine: best.e,
+        localAccuracy: best.acc,
+        blindAccuracy: best.acc,
+        lastLearnedAt: new Date().toISOString(),
+        improvementNotes: ['oddsMult/bloodlineMult込み完全測定', 'RANK_CAPS実測値合わせ', 'cappedBase 60→50', 'minFloor 24/20→22/18', 'trendBonus強化', 'data-less branch boost'],
+      }
+      saveLabel = '全グレード共通重み'
+    }
+
     await prisma.algorithmConfig.updateMany({ where: { isActive: true }, data: { isActive: false } })
     await prisma.algorithmConfig.create({
       data: {
         version: newVersion,
         isActive: true,
-        rules: `v${newVersion} 全因子ブラインド改善: ${best.label}, accuracy ${best.acc}%, calibration修正(RANK_CAPS,cappedBase低減)`,
-        insights: JSON.stringify({
-          localWeights: best.w,
-          engine: best.e,
-          localAccuracy: best.acc,
-          blindAccuracy: best.acc,
-          lastLearnedAt: new Date().toISOString(),
-          improvementNotes: ['oddsMult/bloodlineMult込み完全測定', 'RANK_CAPS実測値合わせ', 'cappedBase 60→50', 'minFloor 24/20→22/18', 'trendBonus強化', 'data-less branch boost'],
-        }),
+        rules: `v${newVersion} ブラインド最適化(${GRADE_FILTER ?? 'ALL'}): ${best.label}, accuracy ${best.acc}%`,
+        insights: JSON.stringify(updatedInsights),
         analyzedCount: best.r.total,
         accuracy: best.acc,
       },
     })
-    console.log(`AlgorithmConfig v${newVersion} 保存完了`)
+    console.log(`AlgorithmConfig v${newVersion} 保存完了 (${saveLabel})`)
+    if (GRADE_FILTER) {
+      console.log('ヒント: 別グレードも最適化するには:')
+      if (GRADE_FILTER === 'G1')   console.log('  node scripts/full_blind_optimize.js --grade G2G3 --save')
+      if (GRADE_FILTER === 'G2G3') console.log('  node scripts/full_blind_optimize.js --grade G1 --save')
+    }
   }
 
   await prisma.$disconnect()
