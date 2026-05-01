@@ -8,7 +8,7 @@ import { Region } from '@/types';
 type GroupDef = {
   group: number;
   commonName: string;
-  scheduleType: 'A' | 'B' | 'C';
+  scheduleType: 'A' | 'B' | 'C' | 'D';
   areas: string[];
 };
 
@@ -220,7 +220,7 @@ const groupDefs: GroupDef[] = [
       '赤柴', '石畑', '尾崎', '上古', '芦沢', '本村', '大河', '西日時'],
   },
   {
-    group: 43, commonName: '信更（牧田・信級）', scheduleType: 'C',
+    group: 43, commonName: '信更（牧田・信級）', scheduleType: 'D',
     areas: ['塩本', '伊切', '牧田中一', '牧田中二', '中牧一', '中牧二',
       '南牧住平', '一倉田和', '下中山', '和田吐唄', '日名', '置原',
       '橋木', '左右', '岩下', '信級中央', '高見', '岩本', '柳高', '川名'],

@@ -1,45 +1,85 @@
 import { CollectionType, DayEntry, MonthlyCalendar } from '@/types';
 
-// スケジュール設定
-// burnableDays: 可燃ごみの曜日 (0=日,1=月,...,6=土)
-// plasticDay:   その日に可燃と同時に資源プラスチックを収集 (burnableDays のうち1つ)
-// branchesDay:  その日に可燃と同時に枝葉を収集 (burnableDays のうち1つ)
-// resourceDay:  月4回の資源収集(缶/びん/紙/不燃)を行う曜日
+interface WeeklyItem {
+  day: number;         // 0=日, 1=月, ..., 6=土
+  types: CollectionType[];
+}
+
+interface MonthlyItem {
+  day: number;         // 0=日, 1=月, ..., 6=土
+  nth: number;         // 1=第1, 2=第2, 3=第3, 4=第4
+  types: CollectionType[];
+}
+
 interface ScheduleConfig {
-  burnableDays: number[];
-  plasticDay: number;
-  branchesDay: number;
-  resourceDay: number;
+  weekly: WeeklyItem[];
+  monthly: MonthlyItem[];
 }
 
 // A: 可燃=火・金, プラ=金, 枝葉=火, 資源=月
 const scheduleA: ScheduleConfig = {
-  burnableDays: [2, 5],
-  plasticDay: 5,
-  branchesDay: 2,
-  resourceDay: 1,
+  weekly: [
+    { day: 2, types: ['burnable', 'branches'] },
+    { day: 5, types: ['burnable', 'plastic'] },
+  ],
+  monthly: [
+    { day: 1, nth: 1, types: ['cans', 'pet'] },
+    { day: 1, nth: 2, types: ['bottlesBatteries'] },
+    { day: 1, nth: 3, types: ['paper', 'pet'] },
+    { day: 1, nth: 4, types: ['nonBurnable'] },
+  ],
 };
 
 // B: 可燃=月・木, プラ=木, 枝葉=月, 資源=金
 const scheduleB: ScheduleConfig = {
-  burnableDays: [1, 4],
-  plasticDay: 4,
-  branchesDay: 1,
-  resourceDay: 5,
+  weekly: [
+    { day: 1, types: ['burnable', 'branches'] },
+    { day: 4, types: ['burnable', 'plastic'] },
+  ],
+  monthly: [
+    { day: 5, nth: 1, types: ['cans', 'pet'] },
+    { day: 5, nth: 2, types: ['bottlesBatteries'] },
+    { day: 5, nth: 3, types: ['paper', 'pet'] },
+    { day: 5, nth: 4, types: ['nonBurnable'] },
+  ],
 };
 
 // C: 可燃=水・土, プラ=土, 枝葉=水, 資源=火
 const scheduleC: ScheduleConfig = {
-  burnableDays: [3, 6],
-  plasticDay: 6,
-  branchesDay: 3,
-  resourceDay: 2,
+  weekly: [
+    { day: 3, types: ['burnable', 'branches'] },
+    { day: 6, types: ['burnable', 'plastic'] },
+  ],
+  monthly: [
+    { day: 2, nth: 1, types: ['cans', 'pet'] },
+    { day: 2, nth: 2, types: ['bottlesBatteries'] },
+    { day: 2, nth: 3, types: ['paper', 'pet'] },
+    { day: 2, nth: 4, types: ['nonBurnable'] },
+  ],
 };
 
-export const schedules: Record<'A' | 'B' | 'C', ScheduleConfig> = {
+// D: 信更（牧田・信級）= 市カレンダー41番
+// 可燃=毎火, プラ=毎金, 不燃=第1水, ペット=第2・4水, 缶=第2土, ビン電池=第3土, 紙=第4土
+const scheduleD: ScheduleConfig = {
+  weekly: [
+    { day: 2, types: ['burnable', 'branches'] },
+    { day: 5, types: ['plastic'] },
+  ],
+  monthly: [
+    { day: 3, nth: 1, types: ['nonBurnable'] },
+    { day: 3, nth: 2, types: ['pet'] },
+    { day: 6, nth: 2, types: ['cans'] },
+    { day: 6, nth: 3, types: ['bottlesBatteries'] },
+    { day: 3, nth: 4, types: ['pet'] },
+    { day: 6, nth: 4, types: ['paper'] },
+  ],
+};
+
+export const schedules: Record<'A' | 'B' | 'C' | 'D', ScheduleConfig> = {
   A: scheduleA,
   B: scheduleB,
   C: scheduleC,
+  D: scheduleD,
 };
 
 function getNthWeekday(year: number, month: number, dayOfWeek: number, n: number): number | null {
@@ -57,16 +97,20 @@ function getNthWeekday(year: number, month: number, dayOfWeek: number, n: number
 export function generateMonthCalendar(
   year: number,
   month: number,
-  scheduleType: 'A' | 'B' | 'C'
+  scheduleType: 'A' | 'B' | 'C' | 'D'
 ): MonthlyCalendar {
   const schedule = schedules[scheduleType];
   const daysInMonth = new Date(year, month, 0).getDate();
 
-  // 資源収集日（月4回）
-  const cansDate = getNthWeekday(year, month, schedule.resourceDay, 1);          // 第1: 缶+ペット
-  const bottlesDate = getNthWeekday(year, month, schedule.resourceDay, 2);       // 第2: ビン+電池
-  const paperDate = getNthWeekday(year, month, schedule.resourceDay, 3);         // 第3: 紙+ペット
-  const nonBurnableDate = getNthWeekday(year, month, schedule.resourceDay, 4);   // 第4: 不燃
+  // 月ごとの収集日を事前計算（同一日に複数種別が重なる場合もマージ）
+  const monthlyMap = new Map<number, CollectionType[]>();
+  for (const item of schedule.monthly) {
+    const d = getNthWeekday(year, month, item.day, item.nth);
+    if (d !== null) {
+      if (!monthlyMap.has(d)) monthlyMap.set(d, []);
+      monthlyMap.get(d)!.push(...item.types);
+    }
+  }
 
   const entries: DayEntry[] = [];
 
@@ -74,18 +118,12 @@ export function generateMonthCalendar(
     const dow = new Date(year, month - 1, date).getDay();
     const types: CollectionType[] = [];
 
-    // 可燃ごみの日
-    if (schedule.burnableDays.includes(dow)) {
-      types.push('burnable');
-      if (dow === schedule.plasticDay) types.push('plastic');
-      if (dow === schedule.branchesDay) types.push('branches');
+    for (const item of schedule.weekly) {
+      if (item.day === dow) types.push(...item.types);
     }
 
-    // 資源収集日（月ごとの曜日）
-    if (date === cansDate) { types.push('cans'); types.push('pet'); }
-    if (date === bottlesDate) types.push('bottlesBatteries');
-    if (date === paperDate) { types.push('paper'); types.push('pet'); }
-    if (date === nonBurnableDate) types.push('nonBurnable');
+    const monthly = monthlyMap.get(date);
+    if (monthly) types.push(...monthly);
 
     if (types.length > 0) entries.push({ date, dayOfWeek: dow, types });
   }
@@ -93,7 +131,7 @@ export function generateMonthCalendar(
   return { year, month, entries };
 }
 
-export function generateYearCalendar(year: number, scheduleType: 'A' | 'B' | 'C'): MonthlyCalendar[] {
+export function generateYearCalendar(year: number, scheduleType: 'A' | 'B' | 'C' | 'D'): MonthlyCalendar[] {
   return Array.from({ length: 12 }, (_, i) => generateMonthCalendar(year, i + 1, scheduleType));
 }
 
