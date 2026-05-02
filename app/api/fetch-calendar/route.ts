@@ -21,169 +21,119 @@ if (typeof globalThis.DOMMatrix === 'undefined') {
   };
 }
 
-// 行テキスト → CollectionType のマッピング（CSV の型名列と一致させる）
-const TYPE_MAP: [string, CollectionType][] = [
-  ['可燃ごみ',     'burnable'],
-  ['不燃ごみ',     'nonBurnable'],
-  ['資源プラスチック', 'plastic'],
-  ['紙',          'paper'],
-  ['缶',          'cans'],       // 「缶、スプレー缶…」も含む
-  ['ペットボトル', 'pet'],
-  ['ビン',        'bottlesBatteries'],
-  ['乾電池',      'bottlesBatteries'],
-  ['剪定枝葉等',  'branches'],
-];
-
-function detectType(text: string): CollectionType | null {
-  for (const [key, type] of TYPE_MAP) {
-    if (text.includes(key)) return type;
-  }
-  return null;
-}
-
-// YYYY/M/D 形式の日付文字列かどうか判定
-function parseDateStr(s: string): { year: number; month: number; day: number } | null {
-  const m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-  if (!m) return null;
-  return { year: parseInt(m[1]), month: parseInt(m[2]), day: parseInt(m[3]) };
-}
-
 interface TextItem {
   str: string;
   x: number;
   y: number;
 }
 
-// CSVライク形式のパース：
-// ヘッダ行に YYYY/M/D 形式の日付が並び、
-// 各型行に ○ マークが対応する日付列に置かれる形式
-function parseCsvLike(
+// 略称 → CollectionType[] のマッピング（長野市PDFフォーマット）
+// "可 / プ" のようなスラッシュ区切りの複合型も含む
+const ABBREV_MAP: [string, CollectionType[]][] = [
+  ['可 / プ', ['burnable', 'plastic']],
+  ['可 / 枝', ['burnable', 'branches']],
+  ['缶 / ペ', ['cans', 'pet']],
+  ['ビ / 電', ['bottlesBatteries']],
+  ['紙 / ペ', ['paper', 'pet']],
+  ['可 / 不', ['burnable', 'nonBurnable']],
+  ['不 / 枝', ['nonBurnable', 'branches']],
+  ['可 / 缶', ['burnable', 'cans']],
+  ['不', ['nonBurnable']],
+  ['可', ['burnable']],
+  ['プ', ['plastic']],
+  ['缶', ['cans']],
+  ['ペ', ['pet']],
+  ['ビ', ['bottlesBatteries']],
+  ['枝', ['branches']],
+];
+
+function parseTypeAbbrev(str: string): CollectionType[] | null {
+  for (const [pat, types] of ABBREV_MAP) {
+    if (str === pat) return types;
+  }
+  return null;
+}
+
+// 年間グリッド形式のパース（長野市PDFフォーマット）:
+// ヘッダ行に "YYYY年M月" が12ヶ月分並び、
+// 各行に日付数字・曜日・収集区分略称が各月列に並ぶ形式
+function parseAnnualGrid(
   rows: Map<number, TextItem[]>
 ): Map<string, Set<CollectionType>> {
   const result = new Map<string, Set<CollectionType>>();
-
-  // Y 降順（上から下）に並べる
   const sortedY = Array.from(rows.keys()).sort((a, b) => b - a);
 
-  // ヘッダ行：YYYY/M/D が3つ以上連続する行を探す
+  // ヘッダ行: "YYYY年M月" が3つ以上並ぶ行を探す
+  const yearMonthRe = /^(\d{4})年(\d{1,2})月$/;
   let headerY: number | null = null;
-  const dateByX = new Map<number, { year: number; month: number; day: number }>();
+  const monthCols: { x: number; year: number; month: number }[] = [];
 
   for (const y of sortedY) {
     const items = rows.get(y)!.sort((a, b) => a.x - b.x);
-    const dates = items.filter(i => parseDateStr(i.str));
-    if (dates.length >= 3) {
+    const matches = items.filter(i => yearMonthRe.test(i.str));
+    if (matches.length >= 3) {
       headerY = y;
-      for (const item of dates) {
-        const d = parseDateStr(item.str)!;
-        dateByX.set(Math.round(item.x), d);
+      for (const item of matches) {
+        const m = item.str.match(yearMonthRe)!;
+        monthCols.push({ x: item.x, year: parseInt(m[1]), month: parseInt(m[2]) });
       }
       break;
     }
   }
 
-  if (headerY === null || dateByX.size === 0) return result;
+  if (headerY === null || monthCols.length === 0) return result;
 
-  // 日付 X 位置の一覧（ソート済み）
-  const dateXs = Array.from(dateByX.keys()).sort((a, b) => a - b);
+  // 列間隔の半分を許容誤差として計算
+  const colSpacing = monthCols.length >= 2
+    ? (monthCols[monthCols.length - 1].x - monthCols[0].x) / (monthCols.length - 1)
+    : 95;
+  const tolerance = Math.floor(colSpacing / 2);
 
-  // 型行：ヘッダより下の行で型名と ○ を含む行
+  // 各データ行を処理
   for (const y of sortedY) {
     if (y >= headerY) continue;
     const items = rows.get(y)!.sort((a, b) => a.x - b.x);
-    const rowText = items.map(i => i.str).join(' ');
 
-    const collType = detectType(rowText);
-    if (!collType) continue;
+    // 各アイテムを最近の月列に割り当て
+    const colItems = new Map<number, TextItem[]>();
+    for (const col of monthCols) colItems.set(col.x, []);
 
-    // ○ マークを探してその X 位置を最近の日付列に対応させる
     for (const item of items) {
-      if (item.str !== '○') continue;
-      const ix = Math.round(item.x);
-      // 最も近い日付 X を探す
-      let nearest = dateXs[0];
-      let minDiff = Math.abs(ix - nearest);
-      for (const dx of dateXs) {
-        const diff = Math.abs(ix - dx);
-        if (diff < minDiff) { minDiff = diff; nearest = dx; }
+      let nearest = monthCols[0];
+      let minDiff = Math.abs(item.x - nearest.x);
+      for (const col of monthCols) {
+        const diff = Math.abs(item.x - col.x);
+        if (diff < minDiff) { minDiff = diff; nearest = col; }
       }
-      if (minDiff > 20) continue; // 許容誤差 20pt 超は無視
-
-      const d = dateByX.get(nearest)!;
-      const key = `${d.year}-${d.month}-${d.day}`;
-      if (!result.has(key)) result.set(key, new Set());
-      result.get(key)!.add(collType);
+      if (minDiff <= tolerance) colItems.get(nearest.x)!.push(item);
     }
-  }
 
-  return result;
-}
+    // 各月列のアイテムから日付と収集区分を抽出
+    for (const col of monthCols) {
+      const cellItems = colItems.get(col.x)!;
+      if (cellItems.length === 0) continue;
 
-// 月次カレンダー形式のパース：
-// 月名（4月 〜 3月）が見出しになっており、1〜31の数字が列ヘッダ、
-// 型行に ○ が並ぶ形式
-function parseMonthlyGrid(
-  rows: Map<number, TextItem[]>,
-  fiscalYear: number
-): Map<string, Set<CollectionType>> {
-  const result = new Map<string, Set<CollectionType>>();
-  const sortedY = Array.from(rows.keys()).sort((a, b) => b - a);
+      let day: number | null = null;
+      const types: CollectionType[] = [];
 
-  let currentMonth = 0;
-  let currentYear = fiscalYear;
-  // 数字列 X → 日 の対応（月が変わるたびにリセット）
-  let dayByX = new Map<number, number>();
-
-  for (const y of sortedY) {
-    const items = rows.get(y)!.sort((a, b) => a.x - b.x);
-    const rowText = items.map(i => i.str).join(' ');
-
-    // 月見出し検出（「4月」「5月」...「3月」）
-    const monthMatch = rowText.match(/\b([1-9]|1[0-2])月\b/);
-    if (monthMatch) {
-      const m = parseInt(monthMatch[1]);
-      currentMonth = m;
-      // 4月〜12月はfiscalYear、1月〜3月はfiscalYear+1
-      currentYear = m >= 4 ? fiscalYear : fiscalYear + 1;
-      dayByX = new Map();
-      // 同一行の数字（1〜31）を日列ヘッダとして収集
-      for (const item of items) {
+      for (const item of cellItems) {
+        // 純粋な整数 1〜31 は日付
         const n = parseInt(item.str);
-        if (!isNaN(n) && n >= 1 && n <= 31) {
-          dayByX.set(Math.round(item.x), n);
+        if (!isNaN(n) && n >= 1 && n <= 31 && item.str === String(n)) {
+          day = n;
+          continue;
         }
+        // 曜日は無視
+        if (/^[日月火水木金土]$/.test(item.str)) continue;
+        // 収集区分略称
+        const ts = parseTypeAbbrev(item.str);
+        if (ts) types.push(...ts);
       }
-      continue;
-    }
 
-    if (currentMonth === 0) continue;
-
-    // 日列ヘッダ行（1〜31の数字が多い行）
-    const nums = items.filter(i => { const n = parseInt(i.str); return !isNaN(n) && n >= 1 && n <= 31; });
-    if (nums.length >= 7 && dayByX.size === 0) {
-      for (const item of nums) dayByX.set(Math.round(item.x), parseInt(item.str));
-      continue;
-    }
-
-    // 型行
-    const collType = detectType(rowText);
-    if (!collType || dayByX.size === 0) continue;
-
-    const dayXs = Array.from(dayByX.keys()).sort((a, b) => a - b);
-    for (const item of items) {
-      if (item.str !== '○') continue;
-      const ix = Math.round(item.x);
-      let nearest = dayXs[0];
-      let minDiff = Math.abs(ix - nearest);
-      for (const dx of dayXs) {
-        const diff = Math.abs(ix - dx);
-        if (diff < minDiff) { minDiff = diff; nearest = dx; }
-      }
-      if (minDiff > 20) continue;
-      const day = dayByX.get(nearest)!;
-      const key = `${currentYear}-${currentMonth}-${day}`;
+      if (day === null || types.length === 0) continue;
+      const key = `${col.year}-${col.month}-${day}`;
       if (!result.has(key)) result.set(key, new Set());
-      result.get(key)!.add(collType);
+      for (const t of types) result.get(key)!.add(t);
     }
   }
 
@@ -203,9 +153,9 @@ async function parsePdf(
   const buf = await res.arrayBuffer();
   debug.push(`PDFサイズ: ${Math.round(buf.byteLength / 1024)} KB`);
 
-  const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
+  const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   GlobalWorkerOptions.workerSrc = pathToFileURL(
-    resolve(process.cwd(), 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs')
+    resolve(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs')
   ).toString();
 
   const pdf = await getDocument({
@@ -238,20 +188,11 @@ async function parsePdf(
     rows.get(ry)!.push(item);
   }
 
-  // アプローチ1: CSV ライク形式（ヘッダに YYYY/M/D）
-  const result1 = parseCsvLike(rows);
-  if (result1.size > 0) {
-    debug.push(`CSVライク形式でパース成功: ${result1.size}日分`);
-    return result1;
-  }
-
-  // アプローチ2: 月次グリッド形式（月名 + 1〜31 の数字列）
-  // 年度開始年を現在年から推測
-  const fiscalYear = new Date().getFullYear();
-  const result2 = parseMonthlyGrid(rows, fiscalYear);
-  if (result2.size > 0) {
-    debug.push(`月次グリッド形式でパース成功: ${result2.size}日分`);
-    return result2;
+  // 年間グリッド形式（"YYYY年M月" ヘッダ + 日付行）
+  const result = parseAnnualGrid(rows);
+  if (result.size > 0) {
+    debug.push(`年間グリッド形式でパース成功: ${result.size}日分`);
+    return result;
   }
 
   debug.push('パース失敗：認識できる形式ではありませんでした');
@@ -264,8 +205,8 @@ export async function POST(req: NextRequest) {
 
   const debug: string[] = [];
   try {
-    await initDb();
     const dateTypeMap = await parsePdf(url, debug);
+    await initDb();
 
     if (dateTypeMap.size === 0) {
       return Response.json({ error: 'カレンダーデータを取得できませんでした', debug }, { status: 422 });
