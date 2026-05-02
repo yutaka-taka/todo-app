@@ -225,7 +225,7 @@ export default function Home() {
           {/* Results */}
           {hasSearched && (
             <div className="border-t border-gray-100 pt-3 space-y-2">
-              {results.length === 0 ? (
+              {results.length === 0 && !searching ? (
                 <p className="text-sm text-gray-400 text-center py-2">「{query}」に該当するごみが見つかりませんでした</p>
               ) : (
                 results.map(item => (
