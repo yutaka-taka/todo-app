@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Region, CollectionType } from '@/types';
-import { generateYearCalendar, collectionTypeLabels, collectionTypeColors } from '@/lib/calendarData';
+import { Region, CollectionType, DayEntry, MonthlyCalendar } from '@/types';
+import { collectionTypeLabels, collectionTypeColors } from '@/lib/calendarData';
 
 const DOW_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -14,19 +14,54 @@ export default function CalendarModal({ region, onClose }: Props) {
   const now = new Date();
   const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
-  const year = currentYear;
 
-  const calendars = generateYearCalendar(year, region.scheduleType);
+  const [calendars, setCalendars] = useState<MonthlyCalendar[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [noData, setNoData] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<{ year: number; month: number; date: number; types: CollectionType[] } | null>(null);
+
   const monthRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const [selectedDate, setSelectedDate] = useState<{ date: number; types: CollectionType[] } | null>(null);
 
   useEffect(() => {
-    const el = monthRefs.current[currentMonth - 1];
-    if (el) {
-      el.scrollIntoView({ behavior: 'instant', block: 'start' });
-    }
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/db/calendars?region=${encodeURIComponent(region.commonName)}&year=${currentYear}`);
+        const data = await res.json();
+        const cals: MonthlyCalendar[] = (data.calendars ?? []).map((c: { year: number; month: number; entries: DayEntry[] }) => ({
+          year: c.year,
+          month: c.month,
+          entries: c.entries,
+        }));
+
+        if (cals.length === 0) {
+          setNoData(true);
+        } else {
+          // 1月〜12月の順に並べ、DBにない月は空カレンダーで補完
+          const calMap = new Map(cals.map(c => [`${c.year}-${c.month}`, c]));
+          const full: MonthlyCalendar[] = [];
+          for (let m = 1; m <= 12; m++) {
+            const key = `${currentYear}-${m}`;
+            full.push(calMap.get(key) ?? { year: currentYear, month: m, entries: [] });
+          }
+          setCalendars(full);
+        }
+      } catch {
+        setNoData(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!loading && calendars.length > 0) {
+      const el = monthRefs.current[currentMonth - 1];
+      if (el) el.scrollIntoView({ behavior: 'instant', block: 'start' });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -35,7 +70,7 @@ export default function CalendarModal({ region, onClose }: Props) {
         <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <div>
             <h2 className="text-base font-bold text-gray-800">📅 ごみ収集カレンダー</h2>
-            <p className="text-xs text-gray-500">{region.commonName} — {year}年</p>
+            <p className="text-xs text-gray-500">{region.commonName} — {currentYear}年</p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg" aria-label="閉じる">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -58,17 +93,35 @@ export default function CalendarModal({ region, onClose }: Props) {
         </div>
 
         <div className="overflow-y-auto flex-1 px-4 py-3 space-y-5">
-          {calendars.map((cal, idx) => {
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-16 gap-3">
+              <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-gray-500">カレンダーデータを読み込み中...</p>
+            </div>
+          )}
+
+          {!loading && noData && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center px-4">
+              <span className="text-4xl">📋</span>
+              <p className="text-sm font-semibold text-gray-700">カレンダーデータがありません</p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                管理画面の「ごみ年間収集予定表」で<br />
+                URLを設定し「情報更新」を押してください。
+              </p>
+            </div>
+          )}
+
+          {!loading && !noData && calendars.map((cal, idx) => {
             const isCurrentMonth = cal.month === currentMonth && cal.year === currentYear;
             const firstDow = new Date(cal.year, cal.month - 1, 1).getDay();
             const daysInMonth = new Date(cal.year, cal.month, 0).getDate();
 
             const entryMap = new Map<number, CollectionType[]>();
-            cal.entries.forEach(e => entryMap.set(e.date, e.types));
+            cal.entries.forEach((e: DayEntry) => entryMap.set(e.date, e.types));
 
             return (
               <div
-                key={cal.month}
+                key={`${cal.year}-${cal.month}`}
                 ref={el => { monthRefs.current[idx] = el; }}
                 className={`rounded-2xl border ${isCurrentMonth ? 'border-blue-400 shadow-md' : 'border-gray-100'} bg-white overflow-hidden`}
               >
@@ -82,7 +135,6 @@ export default function CalendarModal({ region, onClose }: Props) {
                 </div>
 
                 <div className="p-2">
-                  {/* Day of week headers */}
                   <div className="grid grid-cols-7 mb-1">
                     {DOW_LABELS.map((d, i) => (
                       <div key={d} className={`text-center text-xs font-semibold py-1 ${i === 0 ? 'text-red-400' : i === 6 ? 'text-blue-400' : 'text-gray-400'}`}>
@@ -91,7 +143,6 @@ export default function CalendarModal({ region, onClose }: Props) {
                     ))}
                   </div>
 
-                  {/* Calendar grid */}
                   <div className="grid grid-cols-7 gap-y-1">
                     {Array.from({ length: firstDow }).map((_, i) => (
                       <div key={`empty-${i}`} />
@@ -100,7 +151,7 @@ export default function CalendarModal({ region, onClose }: Props) {
                       const types = entryMap.get(date) ?? [];
                       const dow = new Date(cal.year, cal.month - 1, date).getDay();
                       const isToday = isCurrentMonth && date === now.getDate();
-                      const isSelected = isCurrentMonth && selectedDate?.date === date;
+                      const isSelected = selectedDate?.year === cal.year && selectedDate?.month === cal.month && selectedDate?.date === date;
 
                       return (
                         <div
@@ -108,7 +159,7 @@ export default function CalendarModal({ region, onClose }: Props) {
                           className={`flex flex-col items-center py-0.5 ${isCurrentMonth ? 'cursor-pointer active:opacity-60' : ''}`}
                           onClick={() => {
                             if (!isCurrentMonth) return;
-                            setSelectedDate(s => s?.date === date ? null : { date, types });
+                            setSelectedDate(s => (s?.date === date && s?.month === cal.month) ? null : { year: cal.year, month: cal.month, date, types });
                           }}
                         >
                           <span className={`text-xs w-6 h-6 flex items-center justify-center rounded-full font-medium transition-colors
@@ -148,7 +199,7 @@ export default function CalendarModal({ region, onClose }: Props) {
                 </svg>
               </button>
               <p className="text-xs font-bold text-amber-800 mb-1.5 pr-5">
-                {currentMonth}月{selectedDate.date}日 のごみ収集
+                {selectedDate.month}月{selectedDate.date}日 のごみ収集
               </p>
               {selectedDate.types.length === 0 ? (
                 <p className="text-xs text-gray-500">この日の収集はありません</p>

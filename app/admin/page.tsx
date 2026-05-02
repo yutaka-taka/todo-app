@@ -22,6 +22,10 @@ export default function AdminPage() {
   const [separationMessage, setSeparationMessage] = useState('');
   const [separationLastUpdated, setSeparationLastUpdated] = useState<string | null>(null);
 
+  const [annualStatus, setAnnualStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [annualMessage, setAnnualMessage] = useState('');
+  const [annualLastUpdated, setAnnualLastUpdated] = useState<string | null>(null);
+
   useEffect(() => {
     setInfoUrl(localStorage.getItem('infoUrl') || DEFAULT_INFO_URL);
     setPdfUrl(localStorage.getItem('pdfUrl') || DEFAULT_PDF_URL);
@@ -29,6 +33,7 @@ export default function AdminPage() {
     setSeparationUrl(localStorage.getItem('separationUrl') || DEFAULT_SEPARATION_URL);
     setLastUpdated(localStorage.getItem('lastUpdated'));
     setSeparationLastUpdated(localStorage.getItem('separationLastUpdated'));
+    setAnnualLastUpdated(localStorage.getItem('annualLastUpdated'));
   }, []);
 
   // URLは変更のたびに自動保存
@@ -92,6 +97,34 @@ export default function AdminPage() {
     } catch (e) {
       setUpdateStatus('error');
       setUpdateMessage(e instanceof Error ? e.message : '更新に失敗しました');
+    }
+  };
+
+  const handleAnnualUpdate = async () => {
+    if (!annualUrl.trim()) return;
+    localStorage.setItem('annualUrl', annualUrl.trim());
+    setAnnualStatus('loading');
+    setAnnualMessage('');
+
+    try {
+      const res = await fetch('/api/fetch-calendar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: annualUrl.trim(), regionKey: '浅川', calendarGroup: 14 }),
+      });
+      const bodyText = await res.text();
+      let data: Record<string, unknown>;
+      try { data = JSON.parse(bodyText); } catch { throw new Error(`サーバーエラー: ${bodyText.slice(0, 120)}`); }
+      if (!res.ok) throw new Error((data.error as string) ?? 'エラーが発生しました');
+
+      const ts = new Date().toLocaleString('ja-JP');
+      localStorage.setItem('annualLastUpdated', ts);
+      setAnnualLastUpdated(ts);
+      setAnnualStatus('success');
+      setAnnualMessage(`${(data.savedMonths as number) ?? 0}ヶ月分・${(data.totalDays as number) ?? 0}日分のカレンダーデータをDBに保存しました`);
+    } catch (e) {
+      setAnnualStatus('error');
+      setAnnualMessage(e instanceof Error ? e.message : '更新に失敗しました');
     }
   };
 
@@ -277,7 +310,7 @@ export default function AdminPage() {
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
               <span>📅</span> ごみ年間収集予定表
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5">トップ画面の「年間収集予定表」で表示するPDFのURL（自動保存）</p>
+            <p className="text-xs text-gray-500 mt-0.5">収集カレンダーの原本となるPDFのURL。「情報更新」でカレンダーデータをDBに取り込みます。</p>
           </div>
           <textarea
             value={annualUrl}
@@ -286,6 +319,39 @@ export default function AdminPage() {
             className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 bg-gray-50 resize-none"
             placeholder={DEFAULT_ANNUAL_URL}
           />
+          {annualStatus !== 'idle' && (
+            <div className={`rounded-xl px-3 py-2 text-xs font-medium flex items-center gap-2 ${
+              annualStatus === 'loading' ? 'bg-blue-50 text-blue-700' :
+              annualStatus === 'success' ? 'bg-green-50 text-green-700' :
+              'bg-red-50 text-red-700'
+            }`}>
+              {annualStatus === 'loading' && <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
+              {annualStatus === 'success' && <span>✅</span>}
+              {annualStatus === 'error' && <span>❌</span>}
+              <span>{annualStatus === 'loading' ? 'PDFからカレンダーデータを取得中...' : annualMessage}</span>
+            </div>
+          )}
+          <button
+            onClick={handleAnnualUpdate}
+            disabled={annualStatus === 'loading'}
+            className={`w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-colors ${
+              annualStatus === 'loading'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-blue-500 hover:bg-blue-600 text-white'
+            }`}
+          >
+            {annualStatus === 'loading' ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                取得中...
+              </>
+            ) : (
+              <>🔄 情報更新</>
+            )}
+          </button>
+          {annualLastUpdated && (
+            <p className="text-xs text-gray-400 text-center">最終更新: {annualLastUpdated}</p>
+          )}
         </div>
 
         {/* Reset */}
