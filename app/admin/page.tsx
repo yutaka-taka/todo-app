@@ -5,18 +5,17 @@ import { useRouter } from 'next/navigation';
 const DEFAULT_INFO_URL = 'https://www.city.nagano.nagano.jp/n121500/contents/p006210.html';
 const DEFAULT_PDF_URL = 'https://www.city.nagano.nagano.jp/documents/238/r8hozonban.pdf';
 const DEFAULT_SEPARATION_URL = 'https://www.city.nagano.nagano.jp/gomi/menu/gomikensaku/i/index.html?utm_source=chatgpt.com';
+const DEFAULT_ANNUAL_URL = 'https://www.city.nagano.nagano.jp/documents/22303/r8nittei12.pdf';
 
 export default function AdminPage() {
   const router = useRouter();
 
   const [infoUrl, setInfoUrl] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
+  const [annualUrl, setAnnualUrl] = useState('');
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [updateMessage, setUpdateMessage] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  const [pdfUpdateStatus, setPdfUpdateStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [pdfUpdateMessage, setPdfUpdateMessage] = useState('');
-  const [pdfLastUpdated, setPdfLastUpdated] = useState<string | null>(null);
 
   const [separationUrl, setSeparationUrl] = useState('');
   const [separationStatus, setSeparationStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -26,16 +25,20 @@ export default function AdminPage() {
   useEffect(() => {
     setInfoUrl(localStorage.getItem('infoUrl') || DEFAULT_INFO_URL);
     setPdfUrl(localStorage.getItem('pdfUrl') || DEFAULT_PDF_URL);
+    setAnnualUrl(localStorage.getItem('annualUrl') || DEFAULT_ANNUAL_URL);
     setSeparationUrl(localStorage.getItem('separationUrl') || DEFAULT_SEPARATION_URL);
     setLastUpdated(localStorage.getItem('lastUpdated'));
-    setPdfLastUpdated(localStorage.getItem('pdfLastUpdated'));
     setSeparationLastUpdated(localStorage.getItem('separationLastUpdated'));
   }, []);
 
-  // ごみの出し方URLは変更のたびに自動保存
+  // URLは変更のたびに自動保存
   useEffect(() => {
     if (pdfUrl) localStorage.setItem('pdfUrl', pdfUrl);
   }, [pdfUrl]);
+
+  useEffect(() => {
+    if (annualUrl) localStorage.setItem('annualUrl', annualUrl);
+  }, [annualUrl]);
 
   const handleInfoUpdate = async () => {
     if (!infoUrl.trim()) return;
@@ -54,7 +57,6 @@ export default function AdminPage() {
 
       if (!res.ok) throw new Error(data.error ?? 'エラーが発生しました');
 
-      // DBに保存
       if (data.items && data.items.length > 0) {
         await fetch('/api/db/garbage', {
           method: 'POST',
@@ -62,14 +64,12 @@ export default function AdminPage() {
           body: JSON.stringify({ items: data.items, sourceUrl: infoUrl.trim() }),
         });
       }
-      // 地区PDFリンクをDBに保存
       if (data.pdfs && data.pdfs.length > 0) {
         await fetch('/api/db/pdfs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pdfs: data.pdfs, sourceUrl: infoUrl.trim() }),
         });
-        // region_schedulesにも保存
         for (const pdf of data.pdfs) {
           await fetch('/api/db/schedules', {
             method: 'POST',
@@ -125,41 +125,6 @@ export default function AdminPage() {
     }
   };
 
-  const handlePdfUpdate = async () => {
-    if (!pdfUrl.trim()) return;
-    setPdfUpdateStatus('loading');
-    setPdfUpdateMessage('');
-
-    try {
-      const res = await fetch('/api/fetch-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: pdfUrl.trim() }),
-      });
-      const bodyText = await res.text();
-      let data: Record<string, unknown>;
-      try { data = JSON.parse(bodyText); } catch { throw new Error(`サーバーエラー: ${bodyText.slice(0, 120)}`); }
-      if (!res.ok) throw new Error((data.error as string) ?? 'エラーが発生しました');
-
-      // 既存データに追記（蓄積）
-      const items = (data.items as Array<{name: string}>) ?? [];
-      const existing = JSON.parse(localStorage.getItem('gomiNoShikataData') || '[]');
-      const merged = [...existing, ...items].filter(
-        (item, idx, arr) => arr.findIndex((i: {name: string}) => i.name === item.name) === idx
-      );
-      localStorage.setItem('gomiNoShikataData', JSON.stringify(merged));
-
-      const ts = new Date().toLocaleString('ja-JP');
-      localStorage.setItem('pdfLastUpdated', ts);
-      setPdfLastUpdated(ts);
-      setPdfUpdateStatus('success');
-      setPdfUpdateMessage(`${items.length}件の情報を蓄積しました（合計${merged.length}件）`);
-    } catch (e) {
-      setPdfUpdateStatus('error');
-      setPdfUpdateMessage(e instanceof Error ? e.message : '更新に失敗しました');
-    }
-  };
-
   return (
     <div className="min-h-screen">
       {/* Header */}
@@ -204,7 +169,7 @@ export default function AdminPage() {
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
               <span>🔗</span> 分別情報
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5">ごみ分別情報を取得するWebページのURL</p>
+            <p className="text-xs text-gray-500 mt-0.5">ごみ分別情報を取得するWebページまたはPDFのURL</p>
           </div>
           <textarea
             value={infoUrl}
@@ -289,13 +254,13 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* ごみの出し方URL */}
+        {/* ごみの出し方URL（URLのみ設定・自動保存） */}
         <div className="card space-y-3">
           <div>
             <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
               <span>📄</span> ごみの出し方
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5">URLは自動保存されます</p>
+            <p className="text-xs text-gray-500 mt-0.5">トップ画面の「ゴミの出し方(pdf)」で表示するPDFのURL（自動保存）</p>
           </div>
           <textarea
             value={pdfUrl}
@@ -304,39 +269,23 @@ export default function AdminPage() {
             className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 bg-gray-50 resize-none"
             placeholder={DEFAULT_PDF_URL}
           />
-          {pdfUpdateStatus !== 'idle' && (
-            <div className={`rounded-xl px-3 py-2 text-xs font-medium flex items-center gap-2 ${
-              pdfUpdateStatus === 'loading' ? 'bg-blue-50 text-blue-700' :
-              pdfUpdateStatus === 'success' ? 'bg-green-50 text-green-700' :
-              'bg-red-50 text-red-700'
-            }`}>
-              {pdfUpdateStatus === 'loading' && <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
-              {pdfUpdateStatus === 'success' && <span>✅</span>}
-              {pdfUpdateStatus === 'error' && <span>❌</span>}
-              <span>{pdfUpdateStatus === 'loading' ? '更新中...' : pdfUpdateMessage}</span>
-            </div>
-          )}
-          <button
-            onClick={handlePdfUpdate}
-            disabled={pdfUpdateStatus === 'loading'}
-            className={`w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-colors ${
-              pdfUpdateStatus === 'loading'
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'bg-blue-500 hover:bg-blue-600 text-white'
-            }`}
-          >
-            {pdfUpdateStatus === 'loading' ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
-                更新中...
-              </>
-            ) : (
-              <>🔄 情報更新</>
-            )}
-          </button>
-          {pdfLastUpdated && (
-            <p className="text-xs text-gray-400 text-center">最終更新: {pdfLastUpdated}</p>
-          )}
+        </div>
+
+        {/* ごみ年間収集予定表URL */}
+        <div className="card space-y-3">
+          <div>
+            <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+              <span>📅</span> ごみ年間収集予定表
+            </h2>
+            <p className="text-xs text-gray-500 mt-0.5">トップ画面の「年間収集予定表」で表示するPDFのURL（自動保存）</p>
+          </div>
+          <textarea
+            value={annualUrl}
+            onChange={e => setAnnualUrl(e.target.value)}
+            rows={3}
+            className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 bg-gray-50 resize-none"
+            placeholder={DEFAULT_ANNUAL_URL}
+          />
         </div>
 
         {/* Reset */}
@@ -373,4 +322,3 @@ export default function AdminPage() {
     </div>
   );
 }
-

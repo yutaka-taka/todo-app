@@ -1,10 +1,9 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
-import { Region, GarbageItem } from '@/types';
+import { GarbageItem, Region } from '@/types';
 import { searchGarbage } from '@/lib/garbageData';
 import DetailModal from '@/components/DetailModal';
 import CalendarModal from '@/components/CalendarModal';
-import RegionSelectModal from '@/components/RegionSelectModal';
 import CameraModal from '@/components/CameraModal';
 import AdminPasswordModal from '@/components/AdminPasswordModal';
 import PdfModal from '@/components/PdfModal';
@@ -20,7 +19,50 @@ const categoryBadgeColors: Record<string, string> = {
   '拠点回収': 'bg-cyan-100 text-cyan-700',
 };
 
-// DBのgarbageItemをGarbageItem型に変換
+// 浅川地区固定
+const ASAKAWA_REGION: Region = {
+  id: 'g14-0',
+  adminName: '浅川東条',
+  commonName: '浅川',
+  calendarGroup: 14,
+  scheduleType: 'A',
+};
+
+const DEFAULT_PDF_URL = 'https://www.city.nagano.nagano.jp/documents/238/r8hozonban.pdf';
+const DEFAULT_ANNUAL_URL = 'https://www.city.nagano.nagano.jp/documents/22303/r8nittei12.pdf';
+
+// Gemini 2.5 Flash 無料枠レート制限
+const GEMINI_RPM = 10;
+const GEMINI_RPD = 500;
+const CAMERA_USAGE_KEY = 'cameraUsageTimestamps';
+
+function getRemainingUsage(): { perMinute: number; perDay: number } {
+  try {
+    const raw = localStorage.getItem(CAMERA_USAGE_KEY);
+    const timestamps: number[] = raw ? JSON.parse(raw) : [];
+    const now = Date.now();
+    const lastMinute = timestamps.filter(t => t > now - 60000).length;
+    const lastDay = timestamps.filter(t => t > now - 86400000).length;
+    return {
+      perMinute: Math.max(0, GEMINI_RPM - lastMinute),
+      perDay: Math.max(0, GEMINI_RPD - lastDay),
+    };
+  } catch {
+    return { perMinute: GEMINI_RPM, perDay: GEMINI_RPD };
+  }
+}
+
+function recordCameraUsage() {
+  try {
+    const raw = localStorage.getItem(CAMERA_USAGE_KEY);
+    const timestamps: number[] = raw ? JSON.parse(raw) : [];
+    const now = Date.now();
+    const cleaned = timestamps.filter(t => t > now - 86400000);
+    cleaned.push(now);
+    localStorage.setItem(CAMERA_USAGE_KEY, JSON.stringify(cleaned));
+  } catch { /* ignore */ }
+}
+
 function dbRowToGarbageItem(row: Record<string, unknown>): GarbageItem {
   return {
     id: String(row.id ?? ''),
@@ -34,8 +76,7 @@ function dbRowToGarbageItem(row: Record<string, unknown>): GarbageItem {
 
 export default function Home() {
   const router = useRouter();
-  const [region, setRegion] = useState<Region | null>(null);
-  const [regionLoaded, setRegionLoaded] = useState(false);
+  const region: Region = ASAKAWA_REGION;
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<GarbageItem[]>([]);
@@ -45,25 +86,21 @@ export default function Home() {
 
   const [showDetail, setShowDetail] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
-  const [showRegion, setShowRegion] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showAdminPw, setShowAdminPw] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState('');
   const [pdfTitle, setPdfTitle] = useState('');
   const [showSizeLimit, setShowSizeLimit] = useState(false);
+  const [cameraUsage, setCameraUsage] = useState({ perMinute: GEMINI_RPM, perDay: GEMINI_RPD });
 
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('selectedRegion');
-      if (saved) setRegion(JSON.parse(saved));
-      else setShowRegion(true);
-    } catch {
-      setShowRegion(true);
-    }
-    setRegionLoaded(true);
+    setCameraUsage(getRemainingUsage());
+    // 1分ごとに残回数を更新
+    const timer = setInterval(() => setCameraUsage(getRemainingUsage()), 60000);
+    return () => clearInterval(timer);
   }, []);
 
   const handleSearch = async (q?: string) => {
@@ -72,23 +109,19 @@ export default function Home() {
     setSearching(true);
     setHasSearched(true);
 
-    // 1. まず組み込みデータを検索
     const localResults = searchGarbage(searchQuery);
 
-    // 2. DBからも検索
     try {
       const res = await fetch(`/api/db/garbage?q=${encodeURIComponent(searchQuery)}`);
       const data = await res.json();
       const dbItems: GarbageItem[] = (data.items ?? []).map(dbRowToGarbageItem);
 
-      // ローカルにない品目をDBから追加
       const localNames = new Set(localResults.map(i => i.name));
       const merged = [
         ...localResults,
         ...dbItems.filter(i => !localNames.has(i.name)),
       ];
 
-      // 完全一致がある場合は1件だけ
       const exactMatch = merged.find(i => i.name === searchQuery);
       setResults(exactMatch ? [exactMatch] : merged.slice(0, 3));
     } catch {
@@ -97,14 +130,9 @@ export default function Home() {
     setSearching(false);
   };
 
-  const handleRegionSelect = (r: Region) => {
-    setRegion(r);
-    localStorage.setItem('selectedRegion', JSON.stringify(r));
-    setShowRegion(false);
-  };
-
   const handleCameraIdentified = async (name: string) => {
-    // 「診察券（プラスチックカード）」→ 素材キーワードを抽出して検索
+    recordCameraUsage();
+    setCameraUsage(getRemainingUsage());
     const parenMatch = name.match(/[（(]([^）)]+)[）)]/);
     const candidate = parenMatch ? parenMatch[1] : name;
     const materials = ['プラスチック', 'ペットボトル', 'アルミ', 'スチール', '金属', 'ガラス', 'びん',
@@ -120,53 +148,30 @@ export default function Home() {
     setShowDetail(true);
   };
 
-  const handleOpenPDF = async () => {
-    if (!region) return;
-
-    // DBから地域に対応するPDFを検索
-    try {
-      const res = await fetch(`/api/db/pdfs?region=${encodeURIComponent(region.commonName)}`);
-      const data = await res.json();
-      if (data.pdfs && data.pdfs.length > 0) {
-        const pdf = data.pdfs[0];
-        setPdfUrl(pdf.pdf_url);
-        setPdfTitle(pdf.pdf_title || `年間収集予定表（${region.commonName}）`);
-        setShowPdf(true);
-        return;
-      }
-    } catch { /* fallthrough */ }
-
-    // フォールバック: 管理画面で設定したURL
-    const fallback = localStorage.getItem('infoUrl') ||
-      'https://www.city.nagano.nagano.jp/n121500/contents/p006210.html';
-    setPdfUrl(fallback);
-    setPdfTitle(`年間収集予定表（${region.commonName}）`);
+  const handleOpenAnnualPdf = () => {
+    const url = localStorage.getItem('annualUrl') || DEFAULT_ANNUAL_URL;
+    setPdfUrl(url);
+    setPdfTitle('年間収集予定表（浅川）');
     setShowPdf(true);
   };
 
-  if (!regionLoaded) return null;
+  const handleOpenGomiPdf = () => {
+    const url = localStorage.getItem('pdfUrl') || DEFAULT_PDF_URL;
+    setPdfUrl(url);
+    setPdfTitle('ゴミの出し方');
+    setShowPdf(true);
+  };
 
   return (
     <>
       {/* Header */}
       <div className="bg-[#1a1a2e] text-white px-5 pt-12 pb-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-2xl">🗑️</span>
-            <div>
-              <h1 className="text-lg font-bold tracking-wide">ごみ分別アプリ</h1>
-              <p className="text-xs text-slate-400">長野市</p>
-            </div>
+        <div className="flex items-center gap-2">
+          <span className="text-2xl">🗑️</span>
+          <div>
+            <h1 className="text-lg font-bold tracking-wide">ごみ分別アプリ</h1>
+            <p className="text-xs text-slate-400">長野市 浅川地区</p>
           </div>
-          {region && (
-            <button
-              onClick={() => setShowRegion(true)}
-              className="flex items-center gap-1 bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full text-xs transition-colors"
-            >
-              <span>📍</span>
-              <span className="max-w-[80px] truncate">{region.commonName}</span>
-            </button>
-          )}
         </div>
       </div>
 
@@ -212,6 +217,11 @@ export default function Home() {
             <span>カメラで自動識別</span>
           </button>
 
+          {/* Camera usage display */}
+          <p className="text-xs text-gray-400 text-center">
+            １分間の残使用回数：{cameraUsage.perMinute}回　本日の残使用回数：{cameraUsage.perDay}回
+          </p>
+
           {/* Results */}
           {hasSearched && (
             <div className="border-t border-gray-100 pt-3 space-y-2">
@@ -244,22 +254,20 @@ export default function Home() {
           )}
         </div>
 
-        {/* Action buttons grid */}
+        {/* Action buttons */}
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <button
-              onClick={handleOpenPDF}
-              disabled={!region}
-              className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
+              onClick={handleOpenAnnualPdf}
+              className="card flex flex-col items-center gap-2 py-5 hover:shadow-md active:scale-95 transition-all"
             >
               <span className="text-3xl">📄</span>
               <span className="text-xs font-semibold text-gray-700 text-center leading-tight">年間収集<br/>予定表</span>
             </button>
 
             <button
-              onClick={() => region && setShowCalendar(true)}
-              disabled={!region}
-              className={`card flex flex-col items-center gap-2 py-5 transition-all ${region ? 'hover:shadow-md active:scale-95' : 'opacity-50'}`}
+              onClick={() => setShowCalendar(true)}
+              className="card flex flex-col items-center gap-2 py-5 hover:shadow-md active:scale-95 transition-all"
             >
               <span className="text-3xl">📅</span>
               <span className="text-xs font-semibold text-gray-700 text-center leading-tight">収集<br/>カレンダー</span>
@@ -275,46 +283,36 @@ export default function Home() {
             <span className="text-sm font-semibold text-gray-700">大きさ制限</span>
           </button>
 
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => setShowRegion(true)}
-              className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
-            >
-              <span className="text-2xl">📍</span>
-              <span className="text-xs font-semibold text-gray-700">地域選択</span>
-            </button>
+          {/* ゴミの出し方(pdf)ボタン */}
+          <button
+            onClick={handleOpenGomiPdf}
+            className="w-full card flex items-center justify-center gap-2 py-3 hover:shadow-md active:scale-95 transition-all"
+          >
+            <span className="text-lg">📋</span>
+            <span className="text-sm font-semibold text-gray-700">ゴミの出し方(pdf)</span>
+          </button>
 
-            <button
-              onClick={() => setShowAdminPw(true)}
-              className="card flex flex-col items-center gap-2 py-2.5 hover:shadow-md active:scale-95 transition-all"
-            >
-              <span className="text-2xl">⚙️</span>
-              <span className="text-xs font-semibold text-gray-700">管理</span>
-            </button>
-          </div>
+          {/* 管理ボタン（横長） */}
+          <button
+            onClick={() => setShowAdminPw(true)}
+            className="w-full card flex items-center justify-center gap-2 py-3 hover:shadow-md active:scale-95 transition-all"
+          >
+            <span className="text-lg">⚙️</span>
+            <span className="text-sm font-semibold text-gray-700">管理</span>
+          </button>
         </div>
 
-        {region && (
-          <div className="text-center">
-            <p className="text-xs text-gray-400">選択中: {region.commonName}</p>
-          </div>
-        )}
+        <div className="text-center">
+          <p className="text-xs text-gray-400">選択中: {region.commonName}</p>
+        </div>
       </div>
 
       {/* Modals */}
       {showDetail && selectedItem && (
         <DetailModal item={selectedItem} onClose={() => setShowDetail(false)} />
       )}
-      {showCalendar && region && (
+      {showCalendar && (
         <CalendarModal region={region} onClose={() => setShowCalendar(false)} />
-      )}
-      {showRegion && (
-        <RegionSelectModal
-          currentRegion={region}
-          canClose={!!region}
-          onSelect={handleRegionSelect}
-          onClose={() => setShowRegion(false)}
-        />
       )}
       {showCamera && (
         <CameraModal
