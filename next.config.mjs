@@ -2,7 +2,10 @@
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    serverComponentsExternalPackages: ['pdfjs-dist', 'pdfjs-dist/legacy/build/pdf.mjs'],
+    serverComponentsExternalPackages: ['pdfjs-dist'],
+    outputFileTracingIncludes: {
+      '/api/fetch-calendar': ['./node_modules/pdfjs-dist/legacy/build/**'],
+    },
   },
 };
 
