@@ -7,6 +7,20 @@ import type { CollectionType } from '@/types';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+// pdfjs-dist が Node.js 環境で DOMMatrix を要求するためポリフィル
+if (typeof globalThis.DOMMatrix === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).DOMMatrix = class DOMMatrix {
+    a=1;b=0;c=0;d=1;e=0;f=0;
+    m11=1;m12=0;m13=0;m14=0;m21=0;m22=1;m23=0;m24=0;
+    m31=0;m32=0;m33=1;m34=0;m41=0;m42=0;m43=0;m44=1;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    inverse(){return new (globalThis as any).DOMMatrix();}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    multiply(){return new (globalThis as any).DOMMatrix();}
+  };
+}
+
 // 行テキスト → CollectionType のマッピング（CSV の型名列と一致させる）
 const TYPE_MAP: [string, CollectionType][] = [
   ['可燃ごみ',     'burnable'],
