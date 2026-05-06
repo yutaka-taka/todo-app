@@ -1,9 +1,27 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { buildHorseStatsFromResults } from '@/lib/horseStats'
+import { buildHorseStatsFromResults, type HorseStatData } from '@/lib/horseStats'
+import { rebuildCalibrationCurve } from '@/lib/localAutoLearn'
 import { format } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import Anthropic from '@anthropic-ai/sdk'
+
+// §A 全馬intervalDataを集計してビン別連対率を算出
+function computeGlobalIntervalBaseline(stats: HorseStatData[]): Record<string, number> {
+  const bins: Record<string, { races: number; places: number }> = {}
+  for (const hs of stats) {
+    for (const [bin, data] of Object.entries(hs.intervalData)) {
+      if (!bins[bin]) bins[bin] = { races: 0, places: 0 }
+      bins[bin].races  += data.races
+      bins[bin].places += data.places
+    }
+  }
+  const baseline: Record<string, number> = {}
+  for (const [bin, data] of Object.entries(bins)) {
+    if (data.races >= 10) baseline[bin] = data.places / data.races
+  }
+  return baseline
+}
 
 export const maxDuration = 300
 
@@ -55,6 +73,7 @@ export async function POST(request: Request) {
           horseName: res.horseName,
           finishPosition: res.finishPosition,
           popularity: res.popularity ?? null,
+          horseWeight: res.horseWeight ?? null,
         })),
       }))
     )
@@ -81,10 +100,15 @@ export async function POST(request: Request) {
               venueData: hs.venueData,
               surfaceData: hs.surfaceData,
               raceNameData: hs.raceNameData,
-              lastRaceDate: hs.lastRaceDate,
+              intervalData:   hs.intervalData,
+              courseDistData: hs.courseDistData,
+              avgHorseWeight: hs.avgHorseWeight ?? null,
+              weightSamples:  hs.weightSamples ?? 0,
+              lastRaceDate:   hs.lastRaceDate,
               lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
               recentGrades: hs.recentGrades ?? null,
+              recentPops: hs.recentPops ?? null,
             },
           })
           horsesSaved++
@@ -93,6 +117,11 @@ export async function POST(request: Request) {
     }
 
     const horseStatCount = await prisma.horseStat.count()
+
+    // §A: globalIntervalBaseline を計算（freshStats から集計）
+    const globalIntervalBaseline = freshStats.length > 0
+      ? computeGlobalIntervalBaseline(freshStats)
+      : {}
 
     // ② Claude APIがある場合: 全分析済みレースを総括して予想ルールを精緻化
     let refinedRules = ''
@@ -212,6 +241,33 @@ ${(currentConfig?.rules ?? '初期設定').slice(0, 800)}
         refinedSummary = `HorseStatを${horsesSaved}頭分再構築しました（Claude API呼び出し失敗）。`
       }
     }
+
+    // §A: globalIntervalBaseline を active config の insights にマージ保存
+    if (Object.keys(globalIntervalBaseline).length > 0) {
+      try {
+        const activeConfig = await prisma.algorithmConfig.findFirst({
+          where: { isActive: true },
+          orderBy: { version: 'desc' },
+        })
+        if (activeConfig) {
+          let ins: Record<string, unknown> = {}
+          try {
+            const parsed = JSON.parse(activeConfig.insights as string ?? '{}')
+            ins = Array.isArray(parsed) ? { keyFindings: parsed } : (parsed as Record<string, unknown>)
+          } catch { /* fallback to empty */ }
+          ins.globalIntervalBaseline = globalIntervalBaseline
+          await prisma.algorithmConfig.update({
+            where: { id: activeConfig.id },
+            data: { insights: JSON.stringify(ins) },
+          })
+        }
+      } catch (e) {
+        console.warn('globalIntervalBaseline save failed:', e)
+      }
+    }
+
+    // §E: キャリブレーション曲線を再構築
+    await rebuildCalibrationCurve()
 
     return NextResponse.json({
       horsesSaved,

@@ -5,6 +5,7 @@
 import { prisma } from '@/lib/db'
 import { DEFAULT_WEIGHTS } from '@/lib/scorer'
 import type { LocalWeights } from '@/lib/scorer'
+import { getIntervalBin } from '@/lib/intervalBins'
 
 type StatRecord = Record<string, { races: number; places: number }>
 
@@ -17,6 +18,7 @@ interface InsightsJson {
   }
   localAccuracy?: number
   lastLearnedAt?: string
+  globalIntervalBaseline?: Record<string, number>  // §A ビン別全馬連対率
 }
 
 // ========== 重み調整 ==========
@@ -50,6 +52,12 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
     // v341 新因子
     weightAbsMult:        empty(),
     jockeyVenueDistMult:  empty(),
+    // §D
+    finishGapMult:        empty(),
+    // §F
+    courseDistMult:       empty(),
+    // §B
+    oddsGapMult:          empty(),
   }
 
   const races = await prisma.race.findMany({
@@ -95,6 +103,9 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
         ['bloodlineMult',        bonuses.bloodline        ?? 0],
         ['weightAbsMult',        bonuses.weightAbs        ?? 0],
         ['jockeyVenueDistMult',  bonuses.jockeyVenueDist  ?? 0],
+        ['finishGapMult',        bonuses.finishGap        ?? 0],
+        ['courseDistMult',       bonuses.courseDist       ?? 0],
+        ['oddsGapMult',          bonuses.oddsGap          ?? 0],
       ]
 
       for (const [key, val] of factorMap) {
@@ -166,6 +177,7 @@ export async function autoLearnFromNewResult({
   distance,
   raceDate,
   trackCondition,
+  participants,
 }: {
   raceId?: string
   winnerName: string
@@ -177,6 +189,7 @@ export async function autoLearnFromNewResult({
   distance: number
   raceDate: Date
   trackCondition?: string | null
+  participants?: { name: string; popularity?: number | null }[]  // §D recentPops更新用
 }): Promise<{
   horsesUpdated: number
   weightsUpdated: boolean
@@ -195,6 +208,29 @@ export async function autoLearnFromNewResult({
     try {
       const existing = await prisma.horseStat.findUnique({ where: { horseName: name } })
       if (existing) {
+        // 出走間隔を計算してintervalDataを更新
+        const existingLastDate = existing.lastRaceDate ? new Date(existing.lastRaceDate) : null
+        const intervalDays = existingLastDate
+          ? Math.floor((new Date(raceDate).getTime() - existingLastDate.getTime()) / 86400000)
+          : 0
+        const intervalUpdate = intervalDays > 0 ? {
+          intervalData: mergeStatRecord((existing as unknown as { intervalData?: StatRecord }).intervalData ?? {}, getIntervalBin(intervalDays), true),
+        } : {}
+
+        // §D: recentPops 更新（participants から今走の人気を取得）
+        const thisPop = participants?.find((p) => p.name === name)?.popularity ?? null
+        const existingPops = (existing as unknown as { recentPops?: string | null }).recentPops ?? null
+        const newRecentPops = prependForm(existingPops, thisPop ?? 0)
+
+        // §F: courseDistData 更新
+        const cdKey = `${venue}-${surface}-${distance}`
+        const courseDistUpdate = {
+          courseDistData: mergeStatRecord(
+            (existing as unknown as { courseDistData?: StatRecord }).courseDistData ?? {},
+            cdKey, true
+          ),
+        }
+
         await prisma.horseStat.update({
           where: { horseName: name },
           data: {
@@ -211,8 +247,11 @@ export async function autoLearnFromNewResult({
             surfaceData:   mergeStatRecord(existing.surfaceData   as StatRecord, surface, true),
             raceNameData:  mergeStatRecord(existing.raceNameData  as StatRecord, raceKey, true),
             ...(trackCondition ? { trackCondData: mergeStatRecord(existing.trackCondData as StatRecord ?? {}, trackCondition, true) } : {}),
+            ...intervalUpdate,
+            ...courseDistUpdate,
             recentForm:   prependForm(existing.recentForm, pos),
             recentGrades: prependGrades(existing.recentGrades ?? null, grade),
+            recentPops:   newRecentPops,
             lastRaceDate: raceDate,
           },
         })
@@ -228,13 +267,15 @@ export async function autoLearnFromNewResult({
             g2Places:     isG2 ? 1 : 0,
             g3Races:      isG3 ? 1 : 0,
             g3Places:     isG3 ? 1 : 0,
-            distanceData:  { [dk]: { races: 1, places: 1 } },
-            venueData:     { [venue]: { races: 1, places: 1 } },
-            surfaceData:   { [surface]: { races: 1, places: 1 } },
-            raceNameData:  { [raceKey]: { races: 1, places: 1 } },
-            trackCondData: trackCondition ? { [trackCondition]: { races: 1, places: 1 } } : {},
+            distanceData:   { [dk]: { races: 1, places: 1 } },
+            venueData:      { [venue]: { races: 1, places: 1 } },
+            surfaceData:    { [surface]: { races: 1, places: 1 } },
+            raceNameData:   { [raceKey]: { races: 1, places: 1 } },
+            trackCondData:  trackCondition ? { [trackCondition]: { races: 1, places: 1 } } : {},
+            courseDistData: { [`${venue}-${surface}-${distance}`]: { races: 1, places: 1 } },
             recentForm:   String(pos),
             recentGrades: grade,
+            recentPops:   String(participants?.find((p) => p.name === name)?.popularity ?? 0),
             lastRaceDate: raceDate,
           },
         })
@@ -254,6 +295,14 @@ export async function autoLearnFromNewResult({
         const existing = await prisma.horseStat.findUnique({ where: { horseName: entry.horseName } })
         if (!existing) continue
         try {
+          const existingLastDateNP = existing.lastRaceDate ? new Date(existing.lastRaceDate) : null
+          const intervalDaysNP = existingLastDateNP
+            ? Math.floor((new Date(raceDate).getTime() - existingLastDateNP.getTime()) / 86400000)
+            : 0
+          const intervalUpdateNP = intervalDaysNP > 0 ? {
+            intervalData: mergeStatRecord((existing as unknown as { intervalData?: StatRecord }).intervalData ?? {}, getIntervalBin(intervalDaysNP), false),
+          } : {}
+
           await prisma.horseStat.update({
             where: { horseName: entry.horseName },
             data: {
@@ -266,6 +315,11 @@ export async function autoLearnFromNewResult({
               surfaceData:   mergeStatRecord(existing.surfaceData   as StatRecord, surface, false),
               raceNameData:  mergeStatRecord(existing.raceNameData  as StatRecord, raceKey, false),
               ...(trackCondition ? { trackCondData: mergeStatRecord(existing.trackCondData as StatRecord ?? {}, trackCondition, false) } : {}),
+              ...intervalUpdateNP,
+              courseDistData: mergeStatRecord(
+                (existing as unknown as { courseDistData?: StatRecord }).courseDistData ?? {},
+                `${venue}-${surface}-${distance}`, false
+              ),
               lastRaceDate: raceDate,
             },
           })
@@ -398,6 +452,114 @@ export async function getLocalCalibration(): Promise<{ points: { pred: number; a
             return ins.calibration as { points: { pred: number; actual: number }[] }
           }
         }
+      }
+    }
+  } catch { /* silent */ }
+  return null
+}
+
+// §E: キャリブレーション曲線を再構築（予測placeRate→実連対率の補正テーブル）
+// 全予測×結果ペアをビン別（5pt刻み, 20-70+）に集計し、単調増加を保証して保存する
+export async function rebuildCalibrationCurve(): Promise<void> {
+  try {
+    const races = await prisma.race.findMany({
+      where: { predictions: { some: {} }, results: { some: {} } },
+      include: {
+        predictions: { orderBy: { rank: 'asc' }, take: 10 },
+        results: { orderBy: { finishPosition: 'asc' }, take: 2 },
+      },
+      orderBy: { date: 'desc' },
+      take: 200,
+    })
+
+    // ビン境界: 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70+
+    const binEdges = [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70]
+    const bins: { pred: number; hits: number; total: number }[] = binEdges.map((e) => ({ pred: e, hits: 0, total: 0 }))
+
+    for (const race of races) {
+      const actualTop2 = race.results
+        .filter((r) => r.finishPosition <= 2)
+        .map((r) => r.horseName)
+
+      for (const pred of race.predictions) {
+        const rate = pred.placeRate
+        // どのビンに属するか
+        let binIdx = binEdges.length - 1
+        for (let i = 0; i < binEdges.length - 1; i++) {
+          if (rate < binEdges[i + 1]) { binIdx = i; break }
+        }
+        bins[binIdx].total++
+        if (actualTop2.includes(pred.horseName)) bins[binIdx].hits++
+      }
+    }
+
+    // 実連対率を計算（データ不足ビンは線形補間で埋める）
+    const raw: { pred: number; actual: number | null }[] = bins.map((b) => ({
+      pred: b.pred + 2.5,  // ビン中心値
+      actual: b.total >= 5 ? (b.hits / b.total) * 100 : null,
+    }))
+
+    // データなしビンを隣接値で補間
+    const filled = raw.slice()
+    for (let i = 0; i < filled.length; i++) {
+      if (filled[i].actual != null) continue
+      const prev = filled.slice(0, i).reverse().find((x) => x.actual != null)
+      const next = filled.slice(i + 1).find((x) => x.actual != null)
+      if (prev && next) {
+        const t = (filled[i].pred - prev.pred) / (next.pred - prev.pred)
+        filled[i] = { ...filled[i], actual: prev.actual! + t * (next.actual! - prev.actual!) }
+      } else if (prev) {
+        filled[i] = { ...filled[i], actual: prev.actual! }
+      } else if (next) {
+        filled[i] = { ...filled[i], actual: next.actual! }
+      }
+    }
+
+    const withActual = filled.filter((x) => x.actual != null) as { pred: number; actual: number }[]
+    if (withActual.length < 2) return
+
+    // 単調増加を保証（isotonic: 後ろが前以下なら前に合わせる）
+    for (let i = 1; i < withActual.length; i++) {
+      if (withActual[i].actual < withActual[i - 1].actual) {
+        withActual[i].actual = withActual[i - 1].actual
+      }
+    }
+
+    // AlgorithmConfig.insights に保存
+    const activeConfig = await prisma.algorithmConfig.findFirst({
+      where: { isActive: true },
+      orderBy: { version: 'desc' },
+    })
+    if (!activeConfig) return
+
+    let ins: Record<string, unknown> = {}
+    try {
+      const parsed = JSON.parse(activeConfig.insights as string ?? '{}')
+      ins = Array.isArray(parsed) ? { keyFindings: parsed } : (parsed as Record<string, unknown>)
+    } catch { /* empty */ }
+
+    ins.calibration = withActual
+    await prisma.algorithmConfig.update({
+      where: { id: activeConfig.id },
+      data: { insights: JSON.stringify(ins) },
+    })
+  } catch (e) {
+    console.warn('rebuildCalibrationCurve failed:', e)
+  }
+}
+
+// §A AlgorithmConfig.insights から全馬ビン別連対率を取得
+export async function getGlobalIntervalBaseline(): Promise<Record<string, number> | null> {
+  try {
+    const config = await prisma.algorithmConfig.findFirst({
+      where: { isActive: true },
+      orderBy: { version: 'desc' },
+    })
+    if (config?.insights) {
+      const parsed = JSON.parse(config.insights as string) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const ins = parsed as InsightsJson
+        return ins.globalIntervalBaseline ?? null
       }
     }
   } catch { /* silent */ }

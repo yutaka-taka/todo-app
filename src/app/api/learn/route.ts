@@ -107,7 +107,7 @@ export async function POST() {
         distance: r.distance,
         date: r.date,
         trackCondition: r.trackCondition ?? null,
-        results: r.results.map((res) => ({ horseName: res.horseName, finishPosition: res.finishPosition, popularity: res.popularity ?? null })),
+        results: r.results.map((res) => ({ horseName: res.horseName, finishPosition: res.finishPosition, popularity: res.popularity ?? null, horseWeight: res.horseWeight ?? null })),
       }))
     )
     const realStatNames = new Set(realStats.map((s) => s.horseName))
@@ -155,11 +155,32 @@ export async function POST() {
                 existing.trackCondData as Record<string, { races: number; places: number }>,
                 hs.trackCondData
               ),
+              intervalData: mergeStatData(
+                (existing as unknown as { intervalData?: Record<string, { races: number; places: number }> }).intervalData ?? {},
+                hs.intervalData
+              ),
+              courseDistData: mergeStatData(
+                (existing as unknown as { courseDistData?: Record<string, { races: number; places: number }> }).courseDistData ?? {},
+                hs.courseDistData
+              ),
+              // §G: avgHorseWeight を加重平均で更新
+              ...(hs.avgHorseWeight != null && hs.weightSamples != null && hs.weightSamples > 0 ? (() => {
+                const existWS = (existing as unknown as { weightSamples?: number }).weightSamples ?? 0
+                const existAW = (existing as unknown as { avgHorseWeight?: number | null }).avgHorseWeight ?? null
+                if (existAW != null && existWS > 0) {
+                  return {
+                    avgHorseWeight: (existAW * existWS + hs.avgHorseWeight * hs.weightSamples) / (existWS + hs.weightSamples),
+                    weightSamples: existWS + hs.weightSamples,
+                  }
+                }
+                return { avgHorseWeight: hs.avgHorseWeight, weightSamples: hs.weightSamples }
+              })() : {}),
               // 新バッチが既存より新しい場合のみ lastRace 系を上書き
               ...(hs.lastRaceDate >= (existing.lastRaceDate ?? new Date(0)) ? {
                 lastRaceDate: hs.lastRaceDate,
                 lastRacePopularity: hs.lastRacePopularity ?? null,
                 recentGrades: hs.recentGrades ?? null,
+                recentPops: hs.recentPops ?? null,
               } : {}),
               recentForm: mergeRecentForm(hs.recentForm, existing.recentForm),
             },
@@ -181,10 +202,15 @@ export async function POST() {
               surfaceData:   hs.surfaceData,
               raceNameData:  hs.raceNameData,
               trackCondData: hs.trackCondData,
-              lastRaceDate:  hs.lastRaceDate,
+              intervalData:   hs.intervalData,
+              courseDistData: hs.courseDistData,
+              avgHorseWeight: hs.avgHorseWeight ?? null,
+              weightSamples:  hs.weightSamples ?? 0,
+              lastRaceDate:   hs.lastRaceDate,
               lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
               recentGrades: hs.recentGrades ?? null,
+              recentPops: hs.recentPops ?? null,
             },
           })
         }

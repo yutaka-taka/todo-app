@@ -193,6 +193,7 @@ export async function POST(request: NextRequest) {
       distance:       race.distance,
       raceDate:       race.date,
       trackCondition: race.trackCondition ?? null,
+      participants:   race.entries.map((e) => ({ name: e.horseName, popularity: e.popularity ?? null })),
     })
 
     // 統計再計算

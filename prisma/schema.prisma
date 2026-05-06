@@ -115,8 +115,13 @@ model HorseStat {
   surfaceData   Json     @default("{}")  // {"芝": {"races": 10, "places": 6}}
   raceNameData  Json     @default("{}")  // {"天皇賞（春）": {"races": 2, "places": 1}}
   trackCondData Json     @default("{}")  // {"良": {"races": 8, "places": 3}, "稍重": {"races": 2, "places": 1}}
+  intervalData   Json     @default("{}")  // {"standard3": {"races": 4, "places": 2}} 出走間隔ビン別成績
+  courseDistData Json     @default("{}")  // {"東京-芝-2400": {"races": 3, "places": 2}} 会場×馬場×距離複合
+  avgHorseWeight     Float?            // §G 馬体重平均（全出走時の平均）
+  weightSamples      Int      @default(0)  // §G 体重サンプル数
   recentForm         String?           // "1-2-1-3-2"
   recentGrades       String?           // "G1-G2-G3-G1-G2" (recentFormと対応するグレード列)
+  recentPops         String?           // "1-3-8-2-5" (recentFormと対応する人気順位)
   lastRaceDate       DateTime?
   lastRacePopularity Int?              // 最終レース人気（叩き良化検出用）
   runningStyle       String?           // 脚質: 逃/先/差/追（展開予測用）

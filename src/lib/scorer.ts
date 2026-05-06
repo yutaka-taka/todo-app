@@ -1,4 +1,5 @@
 import type { HorseStat } from '@prisma/client'
+import { getIntervalBin } from './intervalBins'
 
 export interface LocalWeights {
   recentFormMult: number
@@ -25,6 +26,12 @@ export interface LocalWeights {
   weightAbsMult: number
   // v341 (#4) 騎手×場×距離
   jockeyVenueDistMult: number
+  // §D 前走人気vs着順ギャップ
+  finishGapMult: number
+  // §F 会場×馬場×距離複合実績
+  courseDistMult: number
+  // §B オッズ乖離（市場の盲点検出）
+  oddsGapMult: number
 }
 
 // v340 (backfill後ブラインド最適化、2026-04-29): 68.7%精度ベスト
@@ -50,6 +57,12 @@ export const DEFAULT_WEIGHTS: LocalWeights = {
   // v341 新因子（自己学習で最適化）
   weightAbsMult:        1.0,
   jockeyVenueDistMult:  1.0,
+  // §D
+  finishGapMult:        1.0,
+  // §F
+  courseDistMult:       1.0,
+  // §B
+  oddsGapMult:          1.0,
 }
 
 // v341 (#2) キャリブレーション学習: 予測値→実連対率の補正テーブル
@@ -125,6 +138,9 @@ export interface ScoredHorse {
       bloodline: number
       weightAbs?: number
       jockeyVenueDist?: number
+      finishGap?: number
+      courseDist?: number
+      oddsGap?: number
     }
   }
 }
@@ -291,6 +307,32 @@ function getWeightAbsoluteBonus(
     if (ratio < -0.02) return -2
     return 0
   }
+}
+
+// §G 季節別馬体重ボーナス: 夏は軽め維持、冬は重め増量が好走帯
+// month: 1-12, weightDiff = currentWeight - avgHorseWeight
+function getSeasonalWeightBonus(month: number, weightDiff: number, surface: string): number {
+  if (weightDiff === 0) return 0
+  const isSummer = month >= 6 && month <= 8
+  const isWinter = month === 12 || month <= 2
+  if (isSummer) {
+    // 夏: 体重増は危険（暑さで消耗の証拠）、軽め維持が好走帯
+    if (weightDiff <= -2 && weightDiff >= -8) return 2   // 適度な減量
+    if (weightDiff > 8)  return -3                        // 太め残り
+    if (weightDiff < -12) return -2                       // 消耗過多
+    return 0
+  } else if (isWinter) {
+    // 冬: 適度な増量が好走帯（筋肉量増加）
+    if (weightDiff >= 2 && weightDiff <= 10) return 2
+    if (weightDiff < -8) return -2                        // 冬に体重減は不安
+    if (weightDiff > 16) return -2                        // 過太め
+    return 0
+  }
+  // 春秋: 中立（体重変化は±6kg以内が安全圏）
+  if (surface === '芝') {
+    if (Math.abs(weightDiff) <= 4) return 1
+  }
+  return 0
 }
 
 // ========== (#7) 時系列減衰 ==========
@@ -526,23 +568,44 @@ function getLastThreeFurlongBonus(ltf: number | null | undefined, surface: strin
 function getRestIntervalBonus(
   stat: HorseStat & { lastRacePopularity?: number | null },
   raceDate: Date | undefined,
+  globalIntervalBaseline?: Record<string, number> | null,
 ): number {
   if (!stat.lastRaceDate || !raceDate) return 0
   const days = Math.floor((new Date(raceDate).getTime() - new Date(stat.lastRaceDate).getTime()) / 86400000)
   if (days <= 0) return 0
 
-  // 前走着順を recentForm から取得
+  const bin = getIntervalBin(days)
+
+  // ① 馬個体の同ビン実績（2走以上のデータがある場合）
+  const personalData = (stat as unknown as { intervalData?: Record<string, { races: number; places: number }> }).intervalData ?? {}
+  const own = personalData[bin]
+  if (own && own.races >= 2) {
+    const rate = own.places / own.races
+    const sf = Math.min(own.races, 5) / 5
+    if (rate >= 0.50)                         return Math.round(8 * sf)
+    if (rate >= 0.30)                         return Math.round(3 * sf)
+    if (rate < 0.10 && own.races >= 4)        return -Math.round(4 * sf)
+    // サンプルはあるが中間帯 → ② にフォールスルー
+  }
+
+  // ② 全馬統計ベースライン（ビン別連対率 vs 全体平均 11.1%）
+  if (globalIntervalBaseline) {
+    const r = globalIntervalBaseline[bin]
+    if (r != null) {
+      const overallAvg = 0.111
+      const globalBonus = Math.round((r - overallAvg) * 60)
+      if (Math.abs(globalBonus) >= 1) return Math.max(-6, Math.min(6, globalBonus))
+    }
+  }
+
+  // ③ ヒューリスティクスフォールバック（既存ロジック）
   let lastRacePosition: number | null = null
   if (stat.recentForm) {
     const pos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
     lastRacePosition = pos[0] ?? null
   }
-
-  // 前走: 人気(1-3位)だったが着外(5着以下) = 叩き（ローテ踏み台）候補
   const wasLikelyPrep = (stat.lastRacePopularity != null && stat.lastRacePopularity <= 3) &&
                          (lastRacePosition != null && lastRacePosition >= 5)
-
-  // 叩き良化型: recentFormで「着順改善」パターンが2回以上（後ろから前に来るパターン）
   let takiCount = 0
   if (stat.recentForm) {
     const pos = stat.recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
@@ -552,22 +615,57 @@ function getRestIntervalBonus(
   }
   const isTakiType = takiCount >= 2
 
-  if (days <= 13) {
-    return wasLikelyPrep && isTakiType ? -1 : -8
-  } else if (days <= 20) {
-    if (wasLikelyPrep) return isTakiType ? 3 : 0
-    return -3
-  } else if (days <= 35) {
-    if (wasLikelyPrep) return isTakiType ? 5 : 2
-    return 0
-  } else if (days <= 56) {
-    return -1
-  } else if (days <= 84) {
-    return -1  // G1馬の中期休養は中立寄りに
-  } else if (days <= 150) {
-    return -3  // 長期休養もペナルティ軽減
+  if (days <= 13)       return wasLikelyPrep && isTakiType ? -1 : -8
+  if (days <= 20)       return wasLikelyPrep ? (isTakiType ? 3 : 0) : -3
+  if (days <= 35)       return wasLikelyPrep ? (isTakiType ? 5 : 2) : 0
+  if (days <= 56)       return -1
+  if (days <= 84)       return -1
+  if (days <= 150)      return -3
+  return -5
+}
+
+// §F 会場×馬場×距離の複合キー実績
+// 単独軸（venue/distance）より強い条件一致で加点。合致なしでは原点を引かない。
+function getCourseDistBonus(
+  cdData: StatRecord,
+  venue: string,
+  surface: string,
+  distance: number,
+): number {
+  const key = `${venue}-${surface}-${distance}`
+  const d = cdData[key]
+  if (!d || d.races < 2) return 0
+  const rate = d.places / d.races
+  const sf = Math.min(d.races, 5) / 5
+  if (rate >= 0.50)                    return Math.round(10 * sf)
+  if (rate >= 0.30)                    return Math.round(5 * sf)
+  if (rate < 0.10 && d.races >= 4)    return -Math.round(4 * sf)
+  return 0
+}
+
+// §D 前走人気と着順のギャップ評価
+// gap = 着順 - 人気順位。負(大健闘) → 加点、正(失速) → 減点。
+// 直近3走に絞り、新しいほど重く評価する。
+function getFinishGapBonus(recentForm?: string | null, recentPops?: string | null): number {
+  if (!recentForm || !recentPops) return 0
+  const positions = recentForm.split('-').map(Number).filter((n) => !isNaN(n) && n > 0)
+  const pops      = recentPops.split('-').map(Number).filter((n) => !isNaN(n))
+  if (positions.length === 0 || pops.length === 0) return 0
+
+  const window = Math.min(3, positions.length, pops.length)
+  let bonus = 0
+  for (let i = 0; i < window; i++) {
+    const pos = positions[i]
+    const pop = pops[i]
+    if (pop === 0) continue  // 人気不明はスキップ
+    const gap = pos - pop    // 負: 健闘 / 正: 失速
+    const w = i === 0 ? 1.0 : i === 1 ? 0.5 : 0.25
+    if      (gap <= -3 && pos <= 3) bonus += 4 * w   // 人気薄で上位好走（大健闘）
+    else if (gap <= -2 && pos <= 5) bonus += 2 * w
+    else if (gap >= 3 && pop <= 2)  bonus -= 4 * w   // 断然人気で大敗
+    else if (gap >= 2 && pop <= 3)  bonus -= 2 * w
   }
-  return -5  // 超長期もG1馬なら過剰ペナルティを避ける
+  return Math.round(Math.max(-8, Math.min(8, bonus)))
 }
 
 function getPaceBonus(runningStyle: string | null | undefined, paceType: 'high' | 'medium' | 'slow'): number {
@@ -586,6 +684,19 @@ function getPaceBonus(runningStyle: string | null | undefined, paceType: 'high' 
   return 0
 }
 
+// §B オッズ乖離ボーナス
+// predRank: モデル予測順位（1=最有力）, oddsRank: 市場人気順位（1=1番人気）
+// gap = oddsRank - predRank: 正→モデルが市場より高評価（穴馬発見）、負→逆
+function computeOddsGapBonus(gap: number, predRank: number, oddsRank: number, weightMult: number): number {
+  if (gap === 0 || (predRank === 0 && oddsRank === 0)) return 0
+  // モデルが市場より3位以上高評価 + かつ市場では6番人気以下 → 穴馬候補としてボーナス
+  if (gap >= 3 && oddsRank >= 6 && predRank <= 3) return Math.round(Math.min(gap - 2, 4) * weightMult)
+  // モデルが市場より低評価 + かつモデル上位 → 過大評価の可能性で減点
+  if (gap <= -3 && predRank <= 3 && oddsRank <= 3) return Math.round(Math.max(gap + 2, -4) * weightMult)
+  // 小幅乖離: ニュートラル
+  return 0
+}
+
 // ========== メインスコアリング ==========
 
 // (#1-#7) 拡張オプション
@@ -594,6 +705,7 @@ export interface ScoringOptions {
   calibration?: CalibrationCurve | null
   scoringMode?: ScoringMode  // 'classic' (default) or 'softmax'
   softmaxTemperature?: number
+  globalIntervalBaseline?: Record<string, number> | null  // §A ビン別全馬連対率
 }
 
 export function localScoreHorses(
@@ -623,6 +735,34 @@ export function localScoreHorses(
     const stat = statMap.get(entry.horseName) ?? null
     return buildScore(entry, race, stat, weights, paceType, options)
   })
+
+  // ========== §B 二段階オッズ乖離補正 ==========
+  // 初期スコアランクと市場人気ランクを比較し、乖離が大きい馬を調整
+  {
+    const sortedByScore = scored.slice().sort((a, b) => b.placeRate - a.placeRate)
+    const predRankMap = new Map<string, number>()
+    sortedByScore.forEach((s, i) => predRankMap.set(s.horseName, i + 1))
+
+    // 市場人気ランクを entries から取得
+    const oddsRankMap = new Map<string, number>()
+    const withOdds = entries.filter((e) => e.oddsPopularity != null)
+    withOdds.sort((a, b) => (a.oddsPopularity ?? 99) - (b.oddsPopularity ?? 99))
+    withOdds.forEach((e, i) => oddsRankMap.set(e.horseName, i + 1))
+
+    if (withOdds.length >= 4) {
+      for (const s of scored) {
+        const predRank = predRankMap.get(s.horseName) ?? 0
+        const oddsRank = oddsRankMap.get(s.horseName) ?? 0
+        if (oddsRank === 0) continue
+        const gap = oddsRank - predRank
+        const bonus = computeOddsGapBonus(gap, predRank, oddsRank, weights.oddsGapMult)
+        if (bonus !== 0) {
+          s.placeRate += bonus
+          if (s.factors._bonuses) s.factors._bonuses.oddsGap = (s.factors._bonuses.oddsGap ?? 0) + bonus
+        }
+      }
+    }
+  }
 
   // ========== (#3) softmax 正規化モード ==========
   if (options.scoringMode === 'softmax') {
@@ -1168,8 +1308,8 @@ function buildScore(
   // ③ 競馬場コース特性（類似コース経験から補正）
   const courseFeatureBonus = getCourseFeatureBonus(race.venue, venueData)
 
-  // ⑪ 出走間隔（叩き良化パターン考慮）
-  const restIntervalBonus = getRestIntervalBonus(stat, race.date)
+  // ⑪ 出走間隔（叩き良化パターン考慮 + ビン別学習）
+  const restIntervalBonus = getRestIntervalBonus(stat, race.date, options.globalIntervalBaseline)
 
   // ⑤ 展開（脚質×予想ペース）
   const paceBonus = getPaceBonus(entry.runningStyle, paceType)
@@ -1200,13 +1340,18 @@ function buildScore(
   const bloodlineRaw = getBloodlineBonus(stat as { sire?: string | null; dam?: string | null; sireOfSire?: string | null; damOfSire?: string | null; sireOfDam?: string | null; damOfDam?: string | null }, race.distance, race.surface)
   const wBloodline = Math.round(bloodlineRaw * weights.bloodlineMult)
 
-  // (#5) 馬体重絶対値: 当該馬の過去平均体重との偏差から評価
-  // 参照体重 = entry.horseWeight - weightChange（前走体重）。複数前走があるならstat側に持たせるが、現状は前走比のみ利用可能。
-  // 簡易実装: 前走体重を参照値とし、現在体重との差を絶対値補正に使う
+  // (#5 §G) 馬体重絶対値: 過去平均体重（stat.avgHorseWeight）を優先参照値として使用
   let weightAbsRaw = 0
-  if (entry.horseWeight != null && entry.weightChange != null) {
-    const refWeight = entry.horseWeight - entry.weightChange
+  const avgRef = (stat as unknown as { avgHorseWeight?: number | null }).avgHorseWeight
+  if (entry.horseWeight != null) {
+    const refWeight = avgRef != null ? avgRef : (entry.weightChange != null ? entry.horseWeight - entry.weightChange : null)
     weightAbsRaw = getWeightAbsoluteBonus(entry.horseWeight, refWeight, race.surface)
+    // §G 季節別ボーナス（平均体重がある場合のみ）
+    if (avgRef != null && race.date != null) {
+      const month = race.date.getMonth() + 1
+      const seasonBonus = getSeasonalWeightBonus(month, entry.horseWeight - avgRef, race.surface)
+      weightAbsRaw += seasonBonus
+    }
   }
   const wWeightAbs = Math.round(weightAbsRaw * weights.weightAbsMult)
 
@@ -1214,11 +1359,20 @@ function buildScore(
   const jockeyVDRaw = getJockeyVenueDistBonus(entry.jockey, race.venue, race.distance, options.jockeyVenueDistMap)
   const wJockeyVD = Math.round(jockeyVDRaw * weights.jockeyVenueDistMult)
 
+  // §D 前走人気vs着順ギャップ
+  const finishGapRaw = getFinishGapBonus(stat.recentForm, (stat as unknown as { recentPops?: string | null }).recentPops)
+  const wFinishGap = Math.round(finishGapRaw * (weights.finishGapMult ?? 1.0))
+
+  // §F 会場×馬場×距離複合実績
+  const cdData = (stat as unknown as { courseDistData?: StatRecord }).courseDistData ?? {}
+  const courseDistRaw = getCourseDistBonus(cdData, race.venue, race.surface, race.distance)
+  const wCourseDist = Math.round(courseDistRaw * (weights.courseDistMult ?? 1.0))
+
   const totalBonus = wRecentForm + wDistance + wVenue + wSurface + wG1 + wAge
     + wJockey + wRaceAffinity + wTrackCond + prepBonus + weightBonus
     + potentialBonus + trendBonus
     + wGate + wTrainer + wLtf + wRest + wCourseFeature + wPace + wOdds + wBloodline
-    + wWeightAbs + wJockeyVD
+    + wWeightAbs + wJockeyVD + wFinishGap + wCourseDist
 
   // v340 キャリブレーション: 旧60→50 で過大評価を抑制
   // 1位予測平均62.8% vs 実連対率31.5% の +31pt 乖離を是正
@@ -1267,6 +1421,8 @@ function buildScore(
         bloodline:    wBloodline,
         weightAbs:    wWeightAbs,
         jockeyVenueDist: wJockeyVD,
+        finishGap:    wFinishGap,
+        courseDist:   wCourseDist,
       } as ScoredHorse['factors']['_bonuses'],
     },
   }
