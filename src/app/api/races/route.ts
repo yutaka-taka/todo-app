@@ -12,8 +12,12 @@ export async function GET() {
     let dayStart: Date
     let dayEnd: Date
 
-    if (dow === 6 || dow === 0) {
-      // 土曜・日曜: 当日のみ
+    if (dow === 6) {
+      // 土曜: 当日（土）〜翌日（日）の2日間
+      dayStart = startOfDay(today)
+      dayEnd = endOfDay(addDays(today, 1))
+    } else if (dow === 0) {
+      // 日曜: 当日のみ
       dayStart = startOfDay(today)
       dayEnd = endOfDay(today)
     } else {

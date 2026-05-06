@@ -2378,7 +2378,7 @@ export default function Home() {
                             className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
                           />
                           <input
-                            type="number"
+                            type="text"
                             value={inputs.weightChange}
                             onChange={(e) =>
                               setHorseWeightInputs((prev) => ({

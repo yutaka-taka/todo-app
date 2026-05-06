@@ -754,10 +754,24 @@ function buildScore(
   const baseSmoothed = smoothedRate(stat.totalPlaces, stat.totalRaces)
 
   let effectiveBase = baseSmoothed * 100
-  if (race.grade === 'G1' && stat.g1Races >= 1) {
-    const g1Smoothed = smoothedRate(stat.g1Places, stat.g1Races)
-    const g1Weight = Math.min(stat.g1Races, 10) / 10 * 0.6
-    effectiveBase = baseSmoothed * (1 - g1Weight) * 100 + g1Smoothed * g1Weight * 100
+  if (race.grade === 'G1') {
+    if (stat.g1Races >= 1) {
+      const g1Smoothed = smoothedRate(stat.g1Places, stat.g1Races)
+      const g1Weight = Math.min(stat.g1Races, 10) / 10 * 0.6
+      effectiveBase = baseSmoothed * (1 - g1Weight) * 100 + g1Smoothed * g1Weight * 100
+    }
+    // G2/G3実績をG1スコアに追加ブレンド（G1経験ゼロ馬も対象）
+    // G2/G3特化好走馬（ヴェルテンベルクタイプ）の不当低評価を是正する
+    // G2/G3率がeffectiveBaseより高い場合のみ引き上げる（下げない）
+    const g2g3Races = (stat.g2Races ?? 0) + (stat.g3Races ?? 0)
+    const g2g3Places = (stat.g2Places ?? 0) + (stat.g3Places ?? 0)
+    if (g2g3Races >= 1) {
+      const g2g3Smoothed = smoothedRate(g2g3Places, g2g3Races)
+      if (g2g3Smoothed * 100 > effectiveBase) {
+        const g2g3Weight = Math.min(g2g3Races, 10) / 10 * 0.3
+        effectiveBase = effectiveBase * (1 - g2g3Weight) + g2g3Smoothed * 100 * g2g3Weight
+      }
+    }
   } else if (race.grade === 'G2' && stat.g2Races >= 1) {
     const g2Smoothed = smoothedRate(stat.g2Places, stat.g2Races)
     const g2Weight = Math.min(stat.g2Races, 10) / 10 * 0.5
@@ -792,7 +806,7 @@ function buildScore(
     const recentGradeList = (stat.recentGrades ?? '').split('-').filter(Boolean)
     if (positions.length > 0) {
       recentFormText = `直近: ${stat.recentForm}`
-      const ws = [0.40, 0.25, 0.18, 0.12, 0.05]
+      const ws = [0.55, 0.25, 0.12, 0.05, 0.03]
       let wSum = 0, wTotal = 0
       for (let i = 0; i < Math.min(positions.length, 5); i++) {
         const w = ws[i] ?? 0.05

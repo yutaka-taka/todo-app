@@ -73,6 +73,10 @@ export async function POST(request: Request) {
               totalPlaces: hs.totalPlaces,
               g1Races: hs.g1Races,
               g1Places: hs.g1Places,
+              g2Races: hs.g2Races,
+              g2Places: hs.g2Places,
+              g3Races: hs.g3Races,
+              g3Places: hs.g3Places,
               distanceData: hs.distanceData,
               venueData: hs.venueData,
               surfaceData: hs.surfaceData,
@@ -80,6 +84,7 @@ export async function POST(request: Request) {
               lastRaceDate: hs.lastRaceDate,
               lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
+              recentGrades: hs.recentGrades ?? null,
             },
           })
           horsesSaved++

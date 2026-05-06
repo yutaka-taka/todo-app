@@ -131,6 +131,10 @@ export async function POST() {
               totalPlaces: existing.totalPlaces + hs.totalPlaces,
               g1Races: existing.g1Races + hs.g1Races,
               g1Places: existing.g1Places + hs.g1Places,
+              g2Races: existing.g2Races + hs.g2Races,
+              g2Places: existing.g2Places + hs.g2Places,
+              g3Races: existing.g3Races + hs.g3Races,
+              g3Places: existing.g3Places + hs.g3Places,
               distanceData: mergeStatData(
                 existing.distanceData as Record<string, { races: number; places: number }>,
                 hs.distanceData
@@ -155,6 +159,7 @@ export async function POST() {
               ...(hs.lastRaceDate >= (existing.lastRaceDate ?? new Date(0)) ? {
                 lastRaceDate: hs.lastRaceDate,
                 lastRacePopularity: hs.lastRacePopularity ?? null,
+                recentGrades: hs.recentGrades ?? null,
               } : {}),
               recentForm: mergeRecentForm(hs.recentForm, existing.recentForm),
             },
@@ -167,6 +172,10 @@ export async function POST() {
               totalPlaces: hs.totalPlaces,
               g1Races: hs.g1Races,
               g1Places: hs.g1Places,
+              g2Races: hs.g2Races,
+              g2Places: hs.g2Places,
+              g3Races: hs.g3Races,
+              g3Places: hs.g3Places,
               distanceData:  hs.distanceData,
               venueData:     hs.venueData,
               surfaceData:   hs.surfaceData,
@@ -175,6 +184,7 @@ export async function POST() {
               lastRaceDate:  hs.lastRaceDate,
               lastRacePopularity: hs.lastRacePopularity ?? null,
               recentForm: hs.recentForm ?? null,
+              recentGrades: hs.recentGrades ?? null,
             },
           })
         }

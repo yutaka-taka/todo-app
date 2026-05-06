@@ -15,6 +15,10 @@ export type HorseStatData = {
   totalPlaces: number
   g1Races: number
   g1Places: number
+  g2Races: number
+  g2Places: number
+  g3Races: number
+  g3Places: number
   distanceData: Record<string, { races: number; places: number }>
   venueData: Record<string, { races: number; places: number }>
   surfaceData: Record<string, { races: number; places: number }>
@@ -22,7 +26,8 @@ export type HorseStatData = {
   trackCondData: Record<string, { races: number; places: number }>
   lastRaceDate: Date
   lastRacePopularity?: number | null
-  recentForm?: string // "1-2-1-3-2" newest first
+  recentForm?: string   // "1-2-1-3-2" newest first
+  recentGrades?: string // "G1-G2-G3-G1-G2" corresponding grades
 }
 
 // Strip trailing 4-digit year: "天皇賞（春）2023" → "天皇賞（春）"
@@ -32,8 +37,8 @@ function normalizeRaceName(name: string): string {
 
 export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData[] {
   const statsMap = new Map<string, HorseStatData>()
-  // Track finish positions (with date/popularity) for recentForm and lastRacePopularity
-  const finishesMap = new Map<string, { date: Date; position: number; popularity?: number | null }[]>()
+  // Track finish positions (with date/popularity/grade) for recentForm, recentGrades, lastRacePopularity
+  const finishesMap = new Map<string, { date: Date; position: number; popularity?: number | null; grade: string }[]>()
 
   for (const race of races) {
     if (race.results.length === 0) continue
@@ -47,6 +52,8 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
           horseName: result.horseName,
           totalRaces: 0, totalPlaces: 0,
           g1Races: 0, g1Places: 0,
+          g2Races: 0, g2Places: 0,
+          g3Races: 0, g3Places: 0,
           distanceData: {}, venueData: {}, surfaceData: {}, raceNameData: {}, trackCondData: {},
           lastRaceDate: race.date,
         })
@@ -55,6 +62,8 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
       stat.totalRaces++
       if (placed) stat.totalPlaces++
       if (race.grade === 'G1') { stat.g1Races++; if (placed) stat.g1Places++ }
+      else if (race.grade === 'G2') { stat.g2Races++; if (placed) stat.g2Places++ }
+      else if (race.grade === 'G3') { stat.g3Races++; if (placed) stat.g3Places++ }
 
       const dk = String(race.distance)
       if (!stat.distanceData[dk]) stat.distanceData[dk] = { races: 0, places: 0 }
@@ -86,16 +95,18 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
       if (!finishesMap.has(result.horseName)) {
         finishesMap.set(result.horseName, [])
       }
-      finishesMap.get(result.horseName)!.push({ date: race.date, position: result.finishPosition, popularity: result.popularity ?? null })
+      finishesMap.get(result.horseName)!.push({ date: race.date, position: result.finishPosition, popularity: result.popularity ?? null, grade: race.grade })
     }
   }
 
-  // Compute recentForm and lastRacePopularity per horse (sort by date desc)
+  // Compute recentForm, recentGrades, lastRacePopularity per horse (sort by date desc)
   finishesMap.forEach((finishes, horseName) => {
     const stat = statsMap.get(horseName)
     if (stat && finishes.length > 0) {
       finishes.sort((a, b) => b.date.getTime() - a.date.getTime())
-      stat.recentForm = finishes.slice(0, 5).map((f) => f.position).join('-')
+      const recent = finishes.slice(0, 5)
+      stat.recentForm = recent.map((f) => f.position).join('-')
+      stat.recentGrades = recent.map((f) => f.grade).join('-')
       stat.lastRacePopularity = finishes[0].popularity ?? null
     }
   })
