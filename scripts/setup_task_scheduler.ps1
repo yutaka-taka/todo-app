@@ -17,12 +17,14 @@ Write-Host "python: $($pythonExe ?? '未検出')"
 Write-Host "ログ: $logDir"
 Write-Host ""
 
-# ---- タスク1: 週次更新（毎週月曜 02:00） ----
+# ---- タスク1: 週次更新（毎週月曜 10:00） ----
+# PC稼働時間: 9:00〜21:00。StartWhenAvailable で電源ON後すみやかに実行。
+# 前回実行日から今日までの欠落分を自動回復する。
 $task1Name = "KeibaWeeklyUpdate"
 $task1Cmd  = "$nodeExe $keibaDir\scripts\weekly_update.js"
 $task1Log  = "$logDir\weekly_update.log"
 
-$trigger1  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "02:00"
+$trigger1  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "10:00"
 $action1   = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/C `"$task1Cmd >> `"$task1Log`" 2>&1`""
 $settings1 = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 4) -StartWhenAvailable
 
@@ -33,8 +35,8 @@ Register-ScheduledTask `
   -Action $action1 `
   -Settings $settings1 `
   -RunLevel Highest `
-  -Description "JRA先週末レース結果取込み + HorseStat再構築" | Out-Null
-Write-Host "[OK] $task1Name — 毎週月曜 02:00" -ForegroundColor Green
+  -Description "JRA前回実行日〜今日のレース取込み + HorseStat再構築（欠落自動回復）" | Out-Null
+Write-Host "[OK] $task1Name — 毎週月曜 10:00（StartWhenAvailable）" -ForegroundColor Green
 
 # ---- タスク2: 週次事前取り込み（毎週金曜 12:00） ----
 $task2Name = "KeibaWeeklyPrefetch"
@@ -68,7 +70,7 @@ $pythonExe $keibaDir\ml\build_dataset.py --from=2021-01-01 "--to=%TODAY%" --out=
   $batchDir = "$keibaDir\scripts"
   Set-Content -Path "$batchDir\ml_dataset.bat" -Value $task3Batch -Encoding utf8
 
-  $trigger3  = New-ScheduledTaskTrigger -Monthly -DaysOfMonth 1 -At "03:00"
+  $trigger3  = New-ScheduledTaskTrigger -Monthly -DaysOfMonth 1 -At "10:00"
   $action3   = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/C `"$batchDir\ml_dataset.bat`""
   $settings3 = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 3) -StartWhenAvailable
 
@@ -79,12 +81,12 @@ $pythonExe $keibaDir\ml\build_dataset.py --from=2021-01-01 "--to=%TODAY%" --out=
     -Action $action3 `
     -Settings $settings3 `
     -RunLevel Highest `
-    -Description "ML訓練データセット生成（毎月1日03:00）" | Out-Null
-  Write-Host "[OK] $task3Name — 毎月1日 03:00 (dataset)" -ForegroundColor Green
+    -Description "ML訓練データセット生成（毎月1日10:00）" | Out-Null
+  Write-Host "[OK] $task3Name — 毎月1日 10:00 (dataset)" -ForegroundColor Green
 
   $task4Name = "KeibaMLRetrain"
   $task4Cmd  = "$pythonExe $keibaDir\ml\train.py --dataset=$keibaDir\ml\dataset.parquet --out-dir=$keibaDir\ml\models"
-  $trigger4  = New-ScheduledTaskTrigger -Monthly -DaysOfMonth 1 -At "04:00"
+  $trigger4  = New-ScheduledTaskTrigger -Monthly -DaysOfMonth 1 -At "11:00"
   $action4   = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/C `"$task4Cmd >> $logDir\ml_retrain.log 2>&1`""
   $settings4 = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 3) -StartWhenAvailable
 
@@ -95,8 +97,8 @@ $pythonExe $keibaDir\ml\build_dataset.py --from=2021-01-01 "--to=%TODAY%" --out=
     -Action $action4 `
     -Settings $settings4 `
     -RunLevel Highest `
-    -Description "LightGBM再訓練 → ONNX出力（毎月1日04:00）" | Out-Null
-  Write-Host "[OK] $task4Name — 毎月1日 04:00 (retrain)" -ForegroundColor Green
+    -Description "LightGBM再訓練 → ONNX出力（毎月1日11:00）" | Out-Null
+  Write-Host "[OK] $task4Name — 毎月1日 11:00 (retrain)" -ForegroundColor Green
 } else {
   Write-Host "[SKIP] MLタスク (python未検出)" -ForegroundColor Yellow
 }
