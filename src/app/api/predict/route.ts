@@ -4,6 +4,8 @@ import { generatePrediction } from '@/lib/ai'
 import { localScoreHorses } from '@/lib/scorer'
 import { getLocalWeights, getLocalCalibration, getGlobalIntervalBaseline } from '@/lib/localAutoLearn'
 import { findNetkeibaRaceId, fetchOddsAndPopularity } from '@/lib/netkeibaRaceId'
+import { isMLModelAvailable, predictML } from '@/lib/mlInference'
+import { buildMLFeatures } from '@/lib/mlFeatures'
 import { format } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
@@ -85,10 +87,57 @@ export async function POST(request: NextRequest) {
         getGlobalIntervalBaseline(),
       ])
       const raceWithCond = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
-      const scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline })
+      const heuristicScored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'classic' })
+
+      // ML アンサンブル: ONNX モデルがあれば 0.7×ML + 0.3×Heuristic
+      let scored = heuristicScored
+      const mlAvailable = isMLModelAvailable()
+      if (mlAvailable) {
+        try {
+          const statMap = new Map(stats.map(s => [s.horseName, s]))
+          // オッズランクを事前計算
+          const sortedByOdds = [...entriesWithOdds].sort((a, b) => (a.oddsFloat ?? 999) - (b.oddsFloat ?? 999))
+          const oddsRankMap = new Map(sortedByOdds.map((e, i) => [e.horseName, i + 1]))
+
+          const mlInputs = entriesWithOdds.map(e => buildMLFeatures(
+            { ...e, jockey: e.jockey ?? null, trainer: null },
+            raceWithCond,
+            statMap.get(e.horseName) ?? null,
+            oddsRankMap.get(e.horseName) ?? 9,
+          ))
+          const mlProbs = await predictML(mlInputs)
+          if (mlProbs) {
+            const ML_WEIGHT = 0.7
+            const HEU_WEIGHT = 0.3
+            const heuMap = new Map(heuristicScored.map(s => [s.horseName, s.placeRate]))
+            const allScored = entriesWithOdds.map((e, idx) => {
+              const mlRate   = (mlProbs[idx] ?? 0.11) * 100
+              const heuRate  = heuMap.get(e.horseName) ?? 25
+              const ensemble = ML_WEIGHT * mlRate + HEU_WEIGHT * heuRate
+              const base     = heuristicScored.find(s => s.horseName === e.horseName)
+              return base ? { ...base, placeRate: Math.round(ensemble * 10) / 10 } : null
+            }).filter(Boolean) as typeof heuristicScored
+            scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, {
+              calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis',
+            })
+            // placeRateをアンサンブル値で上書き
+            for (const s of scored) {
+              const ensembled = allScored.find(a => a.horseName === s.horseName)
+              if (ensembled) s.placeRate = ensembled.placeRate
+            }
+          }
+        } catch (mlErr) {
+          console.warn('[predict] ML推論失敗、ヒューリスティックのみで継続:', (mlErr as Error).message)
+          scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis' })
+        }
+      } else {
+        scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis' })
+      }
+
       predictions = scored
       const coveredCount = stats.length
-      analysis = `【ローカル予想モード】蓄積済み馬データ${horseStatCount}頭を使用（Claude API不要）。出走${race.entries.length}頭中${coveredCount}頭のデータがDBに存在します。残り${race.entries.length - coveredCount}頭は平均値で推定。レース結果を入力するたびに自動学習し精度が向上します。`
+      const mlLabel = mlAvailable ? ' + LightGBMアンサンブル' : ''
+      analysis = `【ローカル予想モード${mlLabel}】蓄積済み馬データ${horseStatCount}頭を使用（Claude API不要）。出走${race.entries.length}頭中${coveredCount}頭のデータがDBに存在します。残り${race.entries.length - coveredCount}頭は平均値で推定。レース結果を入力するたびに自動学習し精度が向上します。`
     } else if (hasApiKey) {
       // AI予想モード
       try {
@@ -132,6 +181,7 @@ export async function POST(request: NextRequest) {
           fallbackRace,
           stats,
           fallbackWeights,
+          { selectionMode: 'multiaxis' },
         )
         predictions = scored
         analysis = `AIが一時的に利用できないため、蓄積データ（${horseStatCount}頭）でローカル予想を実行しました。`
@@ -146,7 +196,7 @@ export async function POST(request: NextRequest) {
         getLocalWeights(race.grade),
       ])
       const noKeyRace = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
-      const scored = localScoreHorses(hasEntries ? entriesWithOdds : [], noKeyRace, stats, noKeyWeights)
+      const scored = localScoreHorses(hasEntries ? entriesWithOdds : [], noKeyRace, stats, noKeyWeights, { selectionMode: 'multiaxis' })
       predictions = scored
       if (horseStatCount < LOCAL_MODE_THRESHOLD) {
         analysis = `【学習中】現在${horseStatCount}頭分のデータが蓄積されています（目標: ${LOCAL_MODE_THRESHOLD}頭）。「自己学習」ボタンを押して学習を進めることで予測精度が向上します。`

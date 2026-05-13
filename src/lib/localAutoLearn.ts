@@ -72,7 +72,7 @@ async function computeFactorAccuracy(windowSize = 40): Promise<FactorStatsMap> {
 
   for (const race of races) {
     const actualTop2 = race.results
-      .filter((r) => r.finishPosition <= 2)
+      .filter((r) => r.finishPosition != null && r.finishPosition <= 2)
       .map((r) => r.horseName)
     if (actualTop2.length < 2) continue
 
@@ -371,7 +371,7 @@ export async function autoLearnFromNewResult({
   let completeHits = 0, halfHits = 0
   for (const r of recentRaces) {
     const top5   = r.predictions.slice(0, 5).map((p) => p.horseName)
-    const actual = r.results.filter((res) => res.finishPosition <= 2).map((res) => res.horseName)
+    const actual = r.results.filter((res) => res.finishPosition != null && res.finishPosition <= 2).map((res) => res.horseName)
     if (actual.length < 2) continue
     const hits = actual.filter((a) => top5.includes(a)).length
     if (hits === 2) completeHits++
@@ -478,7 +478,7 @@ export async function rebuildCalibrationCurve(): Promise<void> {
 
     for (const race of races) {
       const actualTop2 = race.results
-        .filter((r) => r.finishPosition <= 2)
+        .filter((r) => r.finishPosition != null && r.finishPosition <= 2)
         .map((r) => r.horseName)
 
       for (const pred of race.predictions) {

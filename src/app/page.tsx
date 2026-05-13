@@ -37,6 +37,9 @@ interface Prediction {
   horseNumber: number | null
   horseName: string
   placeRate: number
+  horseWeight?: number | null
+  weightChange?: number | null
+  _selectionReason?: string
   factors?: PredictionFactor
 }
 
@@ -155,6 +158,22 @@ function Spinner({ size = 5 }: { size?: number }) {
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
     </svg>
   )
+}
+
+const SELECTION_REASON_LABELS: Record<string, { label: string; color: string }> = {
+  top1:           { label: '本命',       color: 'bg-amber-500/20 text-amber-300' },
+  top2:           { label: '対抗',       color: 'bg-blue-500/20 text-blue-300' },
+  top3:           { label: '単穴',       color: 'bg-purple-500/20 text-purple-300' },
+  expected_value: { label: '期待値',     color: 'bg-green-500/20 text-green-300' },
+  market_gap:     { label: '市場の盲点', color: 'bg-orange-500/30 text-orange-300' },
+  fallback:       { label: '抑え',       color: 'bg-slate-500/20 text-slate-400' },
+}
+
+function formatWeight(w: number | null | undefined, c: number | null | undefined): string {
+  if (w == null) return '-'
+  if (c == null) return `${w}kg`
+  const sign = c > 0 ? '+' : c < 0 ? '' : '±'
+  return `${w}kg (${sign}${c})`
 }
 
 // ---- PlaceRateBar ----
@@ -2386,7 +2405,7 @@ export default function Home() {
                                 [key]: { ...(prev[key] ?? { weight: '', weightChange: '' }), weightChange: e.target.value },
                               }))
                             }
-                            placeholder="±0"
+                            placeholder="例: +4 / -2 / 0"
                             className="w-full bg-[#080c18] border border-[#1e2d4a] rounded-lg px-2 py-1 text-xs text-white text-right placeholder-slate-700 focus:outline-none focus:border-yellow-400/50"
                           />
                         </div>
@@ -2644,6 +2663,16 @@ export default function Home() {
                                 <span className="text-xs text-slate-500 font-mono">{pred.horseNumber}番</span>
                               )}
                               <span className="text-base font-bold text-white truncate">{pred.horseName}</span>
+                              {pred.horseWeight != null && (
+                                <span className="text-[10px] text-slate-400 font-mono flex-shrink-0">
+                                  {formatWeight(pred.horseWeight, pred.weightChange)}
+                                </span>
+                              )}
+                              {pred._selectionReason && SELECTION_REASON_LABELS[pred._selectionReason] && (
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 font-bold ${SELECTION_REASON_LABELS[pred._selectionReason].color}`}>
+                                  {SELECTION_REASON_LABELS[pred._selectionReason].label}
+                                </span>
+                              )}
                             </div>
                             <PlaceRateBar rate={pred.placeRate} />
                           </div>

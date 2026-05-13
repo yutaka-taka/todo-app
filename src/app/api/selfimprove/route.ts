@@ -41,7 +41,7 @@ async function calcAccuracyStats() {
 
   for (const r of racesWithBoth) {
     const top5Names = r.predictions.slice(0, 5).map((p) => p.horseName)
-    const actualTop2 = r.results.filter((res) => res.finishPosition <= 2).map((res) => res.horseName)
+    const actualTop2 = r.results.filter((res) => res.finishPosition != null && res.finishPosition <= 2).map((res) => res.horseName)
     if (actualTop2.length < 2) continue
 
     const hits = actualTop2.filter((a) => top5Names.includes(a)).length
@@ -404,7 +404,7 @@ ${raceList}
       })),
     })
 
-    const actualTop2 = race.results.filter((r) => r.finishPosition <= 2).map((r) => r.horseName)
+    const actualTop2 = race.results.filter((r) => r.finishPosition != null && r.finishPosition <= 2).map((r) => r.horseName)
     const top5 = scored.map((p) => p.horseName)
     const hits = actualTop2.filter((n) => top5.includes(n)).length
     const label = hits === 2 ? '完全' : hits === 1 ? '半的中' : '外れ'

@@ -8,7 +8,7 @@ export type RaceForStats = {
   distance: number
   date: Date
   trackCondition?: string | null
-  results: Array<{ horseName: string; finishPosition: number; popularity?: number | null; horseWeight?: number | null }>
+  results: Array<{ horseName: string; finishPosition: number | null; popularity?: number | null; horseWeight?: number | null }>
 }
 
 export type HorseStatData = {
@@ -54,6 +54,7 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
     const raceKey = normalizeRaceName(race.name)
     for (const result of race.results) {
       if (!result.horseName?.trim()) continue
+      if (result.finishPosition == null) continue  // 取消・除外はスキップ
       const placed = result.finishPosition <= 2
 
       if (!statsMap.has(result.horseName)) {
@@ -109,7 +110,7 @@ export function buildHorseStatsFromResults(races: RaceForStats[]): HorseStatData
       if (!finishesMap.has(result.horseName)) {
         finishesMap.set(result.horseName, [])
       }
-      finishesMap.get(result.horseName)!.push({ date: race.date, position: result.finishPosition, popularity: result.popularity ?? null, grade: race.grade })
+      finishesMap.get(result.horseName)!.push({ date: race.date, position: result.finishPosition ?? 99, popularity: result.popularity ?? null, grade: race.grade })
 
       // §G: collect horse weights for average computation
       if (result.horseWeight != null && result.horseWeight > 0) {

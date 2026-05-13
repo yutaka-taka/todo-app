@@ -62,7 +62,7 @@ export const DEFAULT_WEIGHTS: LocalWeights = {
   // §F
   courseDistMult:       1.0,
   // §B
-  oddsGapMult:          1.0,
+  oddsGapMult:          1.5,
 }
 
 // v341 (#2) キャリブレーション学習: 予測値→実連対率の補正テーブル
@@ -111,6 +111,11 @@ export interface ScoredHorse {
   horseNumber: number | null
   horseName: string
   placeRate: number
+  horseWeight?: number | null
+  weightChange?: number | null
+  _oddsFloat?: number | null
+  _oddsRank?: number | null
+  _selectionReason?: 'top1' | 'top2' | 'top3' | 'expected_value' | 'market_gap' | 'fallback'
   factors: {
     recentForm: string
     distanceSuitability: string
@@ -688,13 +693,18 @@ function getPaceBonus(runningStyle: string | null | undefined, paceType: 'high' 
 // predRank: モデル予測順位（1=最有力）, oddsRank: 市場人気順位（1=1番人気）
 // gap = oddsRank - predRank: 正→モデルが市場より高評価（穴馬発見）、負→逆
 function computeOddsGapBonus(gap: number, predRank: number, oddsRank: number, weightMult: number): number {
-  if (gap === 0 || (predRank === 0 && oddsRank === 0)) return 0
-  // モデルが市場より3位以上高評価 + かつ市場では6番人気以下 → 穴馬候補としてボーナス
-  if (gap >= 3 && oddsRank >= 6 && predRank <= 3) return Math.round(Math.min(gap - 2, 4) * weightMult)
-  // モデルが市場より低評価 + かつモデル上位 → 過大評価の可能性で減点
-  if (gap <= -3 && predRank <= 3 && oddsRank <= 3) return Math.round(Math.max(gap + 2, -4) * weightMult)
-  // 小幅乖離: ニュートラル
-  return 0
+  let raw = 0
+  if (predRank <= 5) {
+    if (gap >= 5)       raw = 4
+    else if (gap >= 3)  raw = 2
+    else if (gap <= -5) raw = -3
+    else if (gap <= -3) raw = -1
+  } else if (predRank <= 10 && oddsRank >= 3 && oddsRank <= 7) {
+    // 伏兵救済: モデル6-10位だが市場3-7番人気
+    if (predRank - oddsRank >= 4) raw = 6
+    else if (predRank - oddsRank >= 2) raw = 3
+  }
+  return Math.round(raw * weightMult)
 }
 
 // ========== メインスコアリング ==========
@@ -706,6 +716,7 @@ export interface ScoringOptions {
   scoringMode?: ScoringMode  // 'classic' (default) or 'softmax'
   softmaxTemperature?: number
   globalIntervalBaseline?: Record<string, number> | null  // §A ビン別全馬連対率
+  selectionMode?: 'classic' | 'multiaxis'  // Phase 2: 多軸推奨
 }
 
 export function localScoreHorses(
@@ -803,11 +814,69 @@ export function localScoreHorses(
     }
   }
 
-  return top7.map((s, i) => ({
+  const calibrated = top7.map((s, i) => ({
     ...s,
     rank: i + 1,
     placeRate: Math.round(s.placeRate * 10) / 10,
   }))
+
+  if (options.selectionMode !== 'classic') {
+    return selectFinalFive(calibrated)
+  }
+  return calibrated.slice(0, 5)
+}
+
+// Phase 2: 多軸推奨ロジック（鉄板3 + 期待値1 + 市場乖離1）
+function selectFinalFive(scored: ScoredHorse[]): ScoredHorse[] {
+  if (scored.length <= 5) {
+    return scored.map((h, i) => ({ ...h, rank: i + 1, _selectionReason: (['top1','top2','top3','fallback','fallback'] as const)[i] ?? 'fallback' }))
+  }
+
+  const sortedByRate = [...scored].sort((a, b) => b.placeRate - a.placeRate)
+  const sortedByEV = [...scored].sort((a, b) => {
+    const evA = (a.placeRate / 100) * (a._oddsFloat ?? 50)
+    const evB = (b.placeRate / 100) * (b._oddsFloat ?? 50)
+    return evB - evA
+  })
+
+  const picked = new Set<string>()
+  const result: ScoredHorse[] = []
+
+  // 上位3頭: placeRate順
+  for (let i = 0; i < 3 && i < sortedByRate.length; i++) {
+    result.push({ ...sortedByRate[i], _selectionReason: (['top1','top2','top3'] as const)[i] })
+    picked.add(sortedByRate[i].horseName)
+  }
+
+  // 4頭目: 未選出の中で期待値最大
+  for (const h of sortedByEV) {
+    if (!picked.has(h.horseName)) {
+      result.push({ ...h, _selectionReason: 'expected_value' })
+      picked.add(h.horseName)
+      break
+    }
+  }
+
+  // 5頭目: placeRate 6-12位 かつ oddsRank との乖離最大（市場の盲点）
+  const candidates = sortedByRate
+    .slice(5, 12)
+    .filter(h => !picked.has(h.horseName))
+    .map(h => {
+      const oddsRank = h._oddsRank ?? 99
+      const predRank = sortedByRate.indexOf(h) + 1
+      return { h, gap: predRank - oddsRank }
+    })
+    .sort((a, b) => b.gap - a.gap)
+
+  if (candidates.length > 0 && candidates[0].gap >= 2) {
+    result.push({ ...candidates[0].h, _selectionReason: 'market_gap' })
+  } else {
+    for (const h of sortedByRate) {
+      if (!picked.has(h.horseName)) { result.push({ ...h, _selectionReason: 'fallback' }); break }
+    }
+  }
+
+  return result.map((h, i) => ({ ...h, rank: i + 1 }))
 }
 
 function buildScore(
@@ -877,6 +946,10 @@ function buildScore(
       horseName: entry.horseName,
       // 旧: max(18, min(50, 22 + partialBonus)) → 上限を65に拡大しデータ豊富馬と同等に競える
       placeRate: Math.max(18, Math.min(65, baseScore + partialBonus)),
+      horseWeight: entry.horseWeight ?? null,
+      weightChange: entry.weightChange ?? null,
+      _oddsFloat: entry.oddsFloat ?? null,
+      _oddsRank: entry.oddsPopularity ?? null,
       factors: {
         recentForm: 'データなし',
         distanceSuitability: '距離実績未収集',
@@ -1394,6 +1467,10 @@ function buildScore(
     horseNumber: entry.horseNumber,
     horseName: entry.horseName,
     placeRate: Math.round(finalRate * 10) / 10,
+    horseWeight: entry.horseWeight ?? null,
+    weightChange: entry.weightChange ?? null,
+    _oddsFloat: entry.oddsFloat ?? null,
+    _oddsRank: entry.oddsPopularity ?? null,
     factors: {
       recentForm: recentFormText,
       distanceSuitability,

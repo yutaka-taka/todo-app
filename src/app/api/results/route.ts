@@ -35,7 +35,7 @@ async function calcAccuracyStats() {
 
   for (const r of racesWithBoth) {
     const top5Names = r.predictions.slice(0, 5).map((p) => p.horseName)
-    const actualTop2 = r.results.filter((res) => res.finishPosition <= 2).map((res) => res.horseName)
+    const actualTop2 = r.results.filter((res) => res.finishPosition != null && res.finishPosition <= 2).map((res) => res.horseName)
     if (actualTop2.length < 2) continue
 
     const hits = actualTop2.filter((a) => top5Names.includes(a)).length

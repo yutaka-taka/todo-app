@@ -53,33 +53,88 @@ export async function POST(request: Request) {
 
     const hasApiKey = !!process.env.ANTHROPIC_API_KEY
 
-    // ① 全レースのRaceResultからHorseStatを再構築（クリーンビルド）
+    // ① 全レースのRaceResultからHorseStatを再構築（チャンク処理・全グレード対象）
+    const CHUNK = 5000
+    const allStatsMap = new Map<string, HorseStatData>()
+
+    let skipCount = 0
+    while (true) {
+      const chunk = await prisma.race.findMany({
+        take: CHUNK,
+        skip: skipCount,
+        orderBy: { id: 'asc' },
+        include: {
+          results: {
+            where: { finishPosition: { not: null } },
+            orderBy: { finishPosition: 'asc' },
+          },
+        },
+      })
+      if (chunk.length === 0) break
+      skipCount += chunk.length
+
+      const chunkStats = buildHorseStatsFromResults(
+        chunk.map((r: typeof chunk[0]) => ({
+          name: r.name,
+          grade: r.grade,
+          venue: r.venue,
+          surface: r.surface,
+          distance: r.distance,
+          date: r.date,
+          trackCondition: r.trackCondition ?? null,
+          results: r.results.map((res: typeof chunk[0]['results'][0]) => ({
+            horseName: res.horseName,
+            finishPosition: res.finishPosition ?? 99,
+            popularity: res.popularity ?? null,
+            horseWeight: res.horseWeight ?? null,
+          })),
+        }))
+      )
+
+      for (const s of chunkStats) {
+        const ex = allStatsMap.get(s.horseName)
+        if (!ex) {
+          allStatsMap.set(s.horseName, s)
+        } else {
+          // マージ: 集計系は加算、最終レース日は最新を採用
+          ex.totalRaces  += s.totalRaces
+          ex.totalPlaces += s.totalPlaces
+          ex.g1Races  += s.g1Races;  ex.g1Places  += s.g1Places
+          ex.g2Races  += s.g2Races;  ex.g2Places  += s.g2Places
+          ex.g3Races  += s.g3Races;  ex.g3Places  += s.g3Places
+          for (const [k, v] of Object.entries(s.distanceData))  ex.distanceData[k]  = ex.distanceData[k]  ? { races: ex.distanceData[k].races  + v.races,  places: ex.distanceData[k].places  + v.places  } : v
+          for (const [k, v] of Object.entries(s.venueData))     ex.venueData[k]     = ex.venueData[k]     ? { races: ex.venueData[k].races     + v.races,  places: ex.venueData[k].places     + v.places  } : v
+          for (const [k, v] of Object.entries(s.surfaceData))   ex.surfaceData[k]   = ex.surfaceData[k]   ? { races: ex.surfaceData[k].races   + v.races,  places: ex.surfaceData[k].places   + v.places  } : v
+          for (const [k, v] of Object.entries(s.raceNameData))  ex.raceNameData[k]  = ex.raceNameData[k]  ? { races: ex.raceNameData[k].races  + v.races,  places: ex.raceNameData[k].places  + v.places  } : v
+          for (const [k, v] of Object.entries(s.trackCondData)) ex.trackCondData[k] = ex.trackCondData[k] ? { races: ex.trackCondData[k].races + v.races,  places: ex.trackCondData[k].places + v.places  } : v
+          for (const [k, v] of Object.entries(s.intervalData))  ex.intervalData[k]  = ex.intervalData[k]  ? { races: ex.intervalData[k].races  + v.races,  places: ex.intervalData[k].places  + v.places  } : v
+          for (const [k, v] of Object.entries(s.courseDistData)) ex.courseDistData[k] = ex.courseDistData[k] ? { races: ex.courseDistData[k].races + v.races, places: ex.courseDistData[k].places + v.places } : v
+          if (s.lastRaceDate > ex.lastRaceDate) {
+            ex.lastRaceDate = s.lastRaceDate
+            ex.lastRacePopularity = s.lastRacePopularity
+            ex.recentForm   = s.recentForm
+            ex.recentGrades = s.recentGrades
+            ex.recentPops   = s.recentPops
+          }
+          if (s.avgHorseWeight != null) {
+            const ws = (ex.weightSamples ?? 0) + (s.weightSamples ?? 0)
+            if (ws > 0) {
+              ex.avgHorseWeight = ((ex.avgHorseWeight ?? s.avgHorseWeight ?? 0) * (ex.weightSamples ?? 0) + s.avgHorseWeight * (s.weightSamples ?? 0)) / ws
+              ex.weightSamples = ws
+            }
+          }
+        }
+      }
+    }
+
+    const freshStats = Array.from(allStatsMap.values())
+    // allRaces は後段の Claude 分析用に別途取得
     const allRaces = await prisma.race.findMany({
-      include: {
-        results: { orderBy: { finishPosition: 'asc' } },
-      },
+      include: { results: { orderBy: { finishPosition: 'asc' } } },
       orderBy: { date: 'asc' },
     })
 
-    const freshStats = buildHorseStatsFromResults(
-      allRaces.map((r) => ({
-        name: r.name,
-        grade: r.grade,
-        venue: r.venue,
-        surface: r.surface,
-        distance: r.distance,
-        date: r.date,
-        results: r.results.map((res) => ({
-          horseName: res.horseName,
-          finishPosition: res.finishPosition,
-          popularity: res.popularity ?? null,
-          horseWeight: res.horseWeight ?? null,
-        })),
-      }))
-    )
-
     // RaceResult が存在する場合のみ HorseStat を再構築
-    // （結果データがなければ学習済み HorseStat を保持する）
     let horsesSaved = 0
     if (freshStats.length > 0) {
       await prisma.horseStat.deleteMany({})
@@ -164,7 +219,7 @@ export async function POST(request: Request) {
         const missDetails: string[] = []
         for (const r of racesWithBoth) {
           const predictedNames = r.predictions.map((p) => p.horseName)
-          const actualTop2 = r.results.filter((res) => res.finishPosition <= 2).map((res) => res.horseName)
+          const actualTop2 = r.results.filter((res) => res.finishPosition != null && res.finishPosition <= 2).map((res) => res.horseName)
           const hits = actualTop2.filter((n) => predictedNames.includes(n)).length
           totalHits += hits
           if (hits < 2) {

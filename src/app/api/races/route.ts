@@ -30,7 +30,7 @@ export async function GET() {
     const races = await prisma.race.findMany({
       where: {
         date: { gte: dayStart, lte: dayEnd },
-        grade: { in: ['G1', 'G2'] },
+        grade: { in: ['G1', 'G2', 'G3'] },
       },
       include: {
         entries: { orderBy: { horseNumber: 'asc' } },

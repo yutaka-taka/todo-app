@@ -13,11 +13,17 @@ model Race {
   name        String
   date        DateTime
   venue       String
-  grade       String       // G1, G2, G3
+  grade       String       // G1, G2, G3, 通常
   surface     String       // 芝, ダート
   distance    Int
   analyzed       Boolean      @default(false)
   trackCondition String?      // 良/稍重/重/不良
+  raceNumber     Int?         // R番号（1-12）
+  netkeibaRaceId String?      @unique // 例: "202602010801"
+  weather        String?      // 晴/曇/雨/雪
+  startTime      String?      // "15:40"
+  className      String?      // "新馬", "未勝利", "1勝クラス", "OP", "G3"など
+  prizePool      Int?         // 1着賞金（万円）
   entries     RaceEntry[]
   results     RaceResult[]
   predictions Prediction[]
@@ -28,6 +34,8 @@ model Race {
   @@unique([name, date])
   @@index([date, grade])
   @@index([analyzed])
+  @@index([date, venue])
+  @@index([className])
 }
 
 // 出走馬
@@ -56,22 +64,31 @@ model RaceResult {
   id             String   @id @default(cuid())
   raceId         String
   race           Race     @relation(fields: [raceId], references: [id], onDelete: Cascade)
-  finishPosition Int
+  finishPosition Int?     // null = 取消・除外・中止
   horseNumber    Int
   horseName      String
   age            Int?
   sex            String?
   weight         Float?
   horseWeight    Int?
+  weightChange   Int?     // 馬体重増減（例: +4, -2）
   jockey         String?
   trainer        String?
   time           String?
   margin         String?
   odds           Float?
   popularity     Int?
+  scratchReason  String?  // "出走取消" | "競走除外" | "競走中止"
+  cornerPositions String? // "1-1-1-1" コーナー通過順位
+  passingTime    String?  // 途中ラップ
+  rapidIncrease  Float?   // 上がり3F（秒）
+  netkeibaHorseId String? // 馬個体ID
   createdAt      DateTime @default(now())
 
   @@unique([raceId, horseNumber])
+  @@index([horseName])
+  @@index([raceId, finishPosition])
+  @@index([netkeibaHorseId])
 }
 
 // 予想結果
@@ -148,4 +165,14 @@ model AlgorithmConfig {
   updatedAt     DateTime @updatedAt
 
   @@index([isActive])
+}
+
+// カレンダー駆動取り込みの進捗管理
+model RaceCalendar {
+  date         DateTime @id          // 開催日（00:00:00）
+  totalRaces   Int                   // この日の総レース数
+  fetchedRaces Int      @default(0)  // うち取込み完了
+  status       String   @default("pending")  // pending/partial/done/error
+  lastFetched  DateTime?
+  errorLog     String?  @db.Text
 }
