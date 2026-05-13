@@ -12,6 +12,106 @@
 const { PrismaClient } = require('@prisma/client')
 const fs = require('fs'), path = require('path')
 
+// ---- ML (ONNX) サポート ----
+let ort = null, mlSession = null, mlFeatureCols = null
+
+async function loadMLModel() {
+  try {
+    ort = require('onnxruntime-node')
+    const modelPath = path.join(__dirname, '..', 'ml', 'models', 'model.onnx')
+    const metaPath  = path.join(__dirname, '..', 'ml', 'models', 'meta.json')
+    if (!fs.existsSync(modelPath) || !fs.existsSync(metaPath)) return false
+    mlSession = await ort.InferenceSession.create(modelPath)
+    mlFeatureCols = JSON.parse(fs.readFileSync(metaPath, 'utf-8')).feature_cols
+    return true
+  } catch { return false }
+}
+
+const _VENUE_WIN_RATE = {
+  '東京': 0.119, '中山': 0.108, '阪神': 0.115, '京都': 0.114,
+  '中京': 0.111, '新潟': 0.108, '札幌': 0.110, '函館': 0.109, '小倉': 0.110, '福島': 0.109,
+}
+const _JOCKEY_RANKS = {
+  'C.ルメール': 14, 'ルメール': 14, '武豊': 10, '川田将雅': 10, '横山武史': 10,
+  '坂井瑠星': 7, '岩田望来': 7, '松山弘平': 7, '戸崎圭太': 7, '池添謙一': 7,
+  '北村友一': 7, 'M.デムーロ': 7, 'デムーロ': 7, '福永祐一': 7,
+  '藤岡佑介': 5, '浜中俊': 5,
+}
+const _TRAINER_RANKS = {
+  '矢作芳人': 10, '国枝栄': 9, '池江泰寿': 9, '藤沢和雄': 8,
+  '友道康夫': 8, '須貝尚介': 7, '音無秀孝': 7, '堀宣行': 8,
+  '手塚貴久': 7, '中内田充正': 8, '高野友和': 7, '斉藤崇史': 6,
+  '安田翔伍': 6, '奥村武': 5, '清水久詞': 5,
+}
+const _GRADE_RANK = { G1: 4, G2: 3, G3: 2, '通常': 1 }
+
+function _getJsonRate(jsonVal, key) {
+  try { const d = typeof jsonVal === 'string' ? JSON.parse(jsonVal) : (jsonVal ?? {}); const v = d[String(key)]; if (v && v.races > 0) return v.places / v.races } catch {}
+  return null
+}
+
+function _buildMLRow(result, race, stat, oddsRank) {
+  const d = new Date(race.date)
+  const pr = stat ? (stat.totalPlaces / Math.max(stat.totalRaces, 1)) : 0.11
+  const form = (() => {
+    if (!stat?.recentForm) return Array(5).fill(pr * 10)
+    const p = stat.recentForm.split('-').slice(0, 5).map(x => { const n = parseInt(x); return isNaN(n) ? pr * 10 : n })
+    while (p.length < 5) p.push(pr * 10)
+    return p
+  })()
+  const formAvg  = form.reduce((s, v) => s + v, 0) / 5
+  const form3Avg = (form[0] + form[1] + form[2]) / 3
+  const lastRd   = stat?.lastRaceDate ? new Date(stat.lastRaceDate) : null
+  const days     = lastRd ? Math.min(Math.floor((d - lastRd) / 86400000), 365) : 60
+  const avgW     = stat?.avgHorseWeight ?? 490
+  const hw       = result.horseWeight ?? avgW
+  const odds     = result.odds ?? 15
+  const distBin  = race.distance <= 1400 ? 0 : race.distance <= 1700 ? 1 : race.distance <= 2100 ? 2 : 3
+  const doy      = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000)
+  return [
+    _GRADE_RANK[race.grade] ?? 1,
+    race.surface === '芝' ? 1 : 0,
+    race.distance, distBin,
+    d.getMonth() + 1, doy,
+    stat?.totalRaces ?? 0, stat?.totalPlaces ?? 0, pr,
+    stat?.g1Races ?? 0, stat?.g1Places ?? 0, stat?.g2Places ?? 0, stat?.g3Places ?? 0,
+    _getJsonRate(stat?.distanceData, race.distance) ?? pr,
+    _getJsonRate(stat?.venueData, race.venue) ?? _VENUE_WIN_RATE[race.venue] ?? 0.111,
+    _getJsonRate(stat?.surfaceData, race.surface) ?? pr,
+    _getJsonRate(stat?.courseDistData, `${race.venue}-${race.surface}-${race.distance}`) ?? (_getJsonRate(stat?.distanceData, race.distance) ?? pr),
+    form[0], form[1], form[2], form[3], form[4], formAvg, form3Avg,
+    days, stat?.lastRacePopularity ?? 9,
+    _JOCKEY_RANKS[result.jockey] ?? 3, _TRAINER_RANKS[result.trainer] ?? 3,
+    hw, result.weightChange ?? 0, hw - avgW,
+    result.popularity ?? 9, odds, Math.log1p(odds), oddsRank,
+    result.rapidIncrease ?? 35.0,
+  ]
+}
+
+async function runMLBatch(featureMatrix) {
+  if (!mlSession || !mlFeatureCols) return null
+  const n = featureMatrix.length
+  const flat = new Float32Array(n * mlFeatureCols.length)
+  featureMatrix.forEach((row, i) => row.forEach((v, j) => { flat[i * mlFeatureCols.length + j] = v ?? 0 }))
+  const tensor = new ort.Tensor('float32', flat, [n, mlFeatureCols.length])
+  const res = await mlSession.run({ input: tensor })
+  const key = Object.keys(res).find(k => k.includes('probabilit'))
+  if (!key) return null
+  const data = res[key].data
+  return Array.from({ length: n }, (_, i) => data[i * 2 + 1])
+}
+
+const _horseStatCache = new Map()
+async function _loadStats(prisma, names) {
+  const missing = names.filter(n => !_horseStatCache.has(n))
+  if (missing.length > 0) {
+    const rows = await prisma.horseStat.findMany({ where: { horseName: { in: missing } } })
+    for (const r of rows) _horseStatCache.set(r.horseName, r)
+    for (const n of missing) if (!_horseStatCache.has(n)) _horseStatCache.set(n, null)
+  }
+  return names.map(n => _horseStatCache.get(n) ?? null)
+}
+
 function loadEnv(f) {
   try {
     fs.readFileSync(path.join(__dirname, '..', f), 'utf8').split('\n').forEach(l => {
@@ -1138,6 +1238,75 @@ async function main() {
       },
     })
     console.log(`AlgorithmConfig v${newVersion} 保存完了`)
+  }
+
+  // ====== Phase ML: --ml-enabled 時に ONNX アンサンブル評価 ======
+  if (process.argv.includes('--ml-enabled')) {
+    console.log('\n[Phase ML] LightGBM + ONNX アンサンブル評価')
+    const mlLoaded = await loadMLModel()
+    if (!mlLoaded) {
+      console.log('  [SKIP] ml/models/model.onnx が見つかりません。')
+      console.log('  python ml/build_dataset.py ... && python ml/train.py ... を実行してください。')
+    } else {
+      console.log(`  モデル読み込み完了 (${mlFeatureCols.length}次元)`)
+      // allRaces は Prisma Race オブジェクト（.results, .entries を含む）
+      const evalRaces = allRaces.filter(r => {
+        const actual = r.results.filter(rr => rr.finishPosition != null && rr.finishPosition <= 2)
+        return actual.length >= 2 && r.results.length >= 3
+      }).slice(-300)  // 直近300件
+
+      let mlTotal = 0, mlHit1 = 0, mlHit2 = 0
+      let heuTotal = 0, heuHit1 = 0, heuHit2 = 0
+
+      for (const race of evalRaces) {
+        const results = race.results.filter(r => r.finishPosition != null)
+        const actual = results.filter(r => r.finishPosition <= 2).map(r => r.horseName)
+        if (actual.length < 2 || results.length < 3) continue
+
+        const names = results.map(r => r.horseName)
+        const stats = await _loadStats(prisma, names)
+        const statMap = new Map(names.map((n, i) => [n, stats[i]]))
+        const sorted = [...results].sort((a, b) => (a.odds ?? 999) - (b.odds ?? 999))
+        const oddsRankMap = new Map(sorted.map((r, i) => [r.horseName, i + 1]))
+
+        const featureMatrix = results.map(r =>
+          _buildMLRow(r, race, statMap.get(r.horseName), oddsRankMap.get(r.horseName) ?? 9)
+        )
+        const mlProbs = await runMLBatch(featureMatrix)
+
+        const heuScores = results.map((r, i) => {
+          const stat = statMap.get(r.horseName)
+          const pr = stat ? (stat.totalPlaces / Math.max(stat.totalRaces, 1)) : 0.11
+          return { horseName: r.horseName, heu: pr * 100 }
+        })
+
+        if (mlProbs) {
+          const ML_W = 0.7, HEU_W = 0.3
+          const mlScores = results.map((r, i) => ({
+            horseName: r.horseName,
+            score: ML_W * (mlProbs[i] ?? 0.11) * 100 + HEU_W * (heuScores[i]?.heu ?? 11),
+          }))
+          mlScores.sort((a, b) => b.score - a.score)
+          const top5ml = mlScores.slice(0, 5).map(s => s.horseName)
+          mlTotal++
+          const hitsML = actual.filter(n => top5ml.includes(n)).length
+          if (hitsML >= 1) mlHit1++
+          if (hitsML >= 2) mlHit2++
+        }
+
+        heuScores.sort((a, b) => b.heu - a.heu)
+        const top5heu = heuScores.slice(0, 5).map(s => s.horseName)
+        heuTotal++
+        const hitsHeu = actual.filter(n => top5heu.includes(n)).length
+        if (hitsHeu >= 1) heuHit1++
+        if (hitsHeu >= 2) heuHit2++
+      }
+
+      const fmt = (n, t) => t > 0 ? `${(n / t * 100).toFixed(1)}%` : '—'
+      console.log(`  ヒューリスティック: Hit@5(1)=${fmt(heuHit1,heuTotal)} Hit@5(2)=${fmt(heuHit2,heuTotal)} [${heuTotal}件]`)
+      console.log(`  ML 0.7+Heu 0.3:   Hit@5(1)=${fmt(mlHit1,mlTotal)} Hit@5(2)=${fmt(mlHit2,mlTotal)} [${mlTotal}件]`)
+      console.log(`  → 詳細グリッドサーチは: node scripts/optimize_ml_blend.js`)
+    }
   }
 
   await prisma.$disconnect()
