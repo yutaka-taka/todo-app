@@ -107,23 +107,28 @@ export async function POST(request: NextRequest) {
           ))
           const mlProbs = await predictML(mlInputs)
           if (mlProbs) {
-            const ML_WEIGHT = 0.7
-            const HEU_WEIGHT = 0.3
+            const ML_WEIGHT  = Math.max(0, Math.min(1, parseFloat(process.env.ML_BLEND_RATIO ?? '0.7')))
+            const HEU_WEIGHT = 1 - ML_WEIGHT
             const heuMap = new Map(heuristicScored.map(s => [s.horseName, s.placeRate]))
-            const allScored = entriesWithOdds.map((e, idx) => {
-              const mlRate   = (mlProbs[idx] ?? 0.11) * 100
+            const mlRateMap  = new Map(entriesWithOdds.map((e, idx) => [e.horseName, (mlProbs[idx] ?? 0.11) * 100]))
+            const allScored = entriesWithOdds.map((e) => {
+              const mlRate   = mlRateMap.get(e.horseName) ?? 11
               const heuRate  = heuMap.get(e.horseName) ?? 25
               const ensemble = ML_WEIGHT * mlRate + HEU_WEIGHT * heuRate
               const base     = heuristicScored.find(s => s.horseName === e.horseName)
-              return base ? { ...base, placeRate: Math.round(ensemble * 10) / 10 } : null
+              return base ? { ...base, placeRate: Math.round(ensemble * 10) / 10, _mlRate: Math.round(mlRate * 10) / 10, _heuristicRate: Math.round(heuRate * 10) / 10 } : null
             }).filter(Boolean) as typeof heuristicScored
             scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, {
               calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis',
             })
-            // placeRateをアンサンブル値で上書き
+            // placeRate と ML デバッグフィールドをアンサンブル値で上書き
             for (const s of scored) {
               const ensembled = allScored.find(a => a.horseName === s.horseName)
-              if (ensembled) s.placeRate = ensembled.placeRate
+              if (ensembled) {
+                s.placeRate       = ensembled.placeRate
+                s._mlRate         = ensembled._mlRate
+                s._heuristicRate  = ensembled._heuristicRate
+              }
             }
           }
         } catch (mlErr) {

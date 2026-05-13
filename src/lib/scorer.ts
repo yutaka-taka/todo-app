@@ -116,6 +116,8 @@ export interface ScoredHorse {
   _oddsFloat?: number | null
   _oddsRank?: number | null
   _selectionReason?: 'top1' | 'top2' | 'top3' | 'expected_value' | 'market_gap' | 'fallback'
+  _mlRate?: number | null       // ML(ONNX)が出力した連対確率 × 100
+  _heuristicRate?: number | null // ヒューリスティックのplaceRate（アンサンブル前）
   factors: {
     recentForm: string
     distanceSuitability: string
