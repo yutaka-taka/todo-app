@@ -149,8 +149,35 @@ async function main() {
     console.log(`  ${mark} ${date} ${race.name}(${race.grade}) 予想:[${top5.join('/')}] 実績:[${actual.join('/')}]`)
   }
 
+  // JSON ログ出力（.evaluation_log.json に追記）
+  const evalRecord = {
+    timestamp: new Date().toISOString(),
+    period: { from: fromDate.toISOString().split('T')[0], to: toDate.toISOString().split('T')[0] },
+    total, hit1, hit2,
+    hit1Rate: hit1 / total,
+    hit2Rate: hit2 / total,
+    roi,
+    byGrade: Object.fromEntries(
+      Object.entries(byGrade).map(([g, v]) => [g, {
+        total: v.total,
+        hit1Rate: v.hit1 / v.total,
+        hit2Rate: v.hit2 / v.total,
+      }])
+    ),
+  }
+  if (args['json-out'] || args['log']) {
+    const logPath = path.join(__dirname, '..', '.evaluation_log.json')
+    fs.appendFileSync(logPath, JSON.stringify(evalRecord) + '\n', 'utf-8')
+    console.log(`\n評価ログ追記: ${logPath}`)
+  }
+  if (args.json) {
+    console.log('\n' + JSON.stringify(evalRecord, null, 2))
+  }
+
   console.log('\n=== 完了 ===\n')
   await prisma.$disconnect()
+
+  return evalRecord
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

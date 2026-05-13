@@ -89,6 +89,21 @@ async function main() {
         }
       }
 
+      // KPI 評価 → .evaluation_log.json 追記
+      if (!dryRun) {
+        try {
+          console.log('  KPI 評価中...')
+          const evalScript = path.join(__dirname, 'eval_full.js')
+          const evalProc = require('child_process').spawnSync(
+            'node', [evalScript, '--log', '--from=2025-01-01'],
+            { cwd: path.join(__dirname, '..'), stdio: 'inherit', env: process.env }
+          )
+          if (evalProc.status !== 0) console.warn('  KPI 評価失敗 (exit', evalProc.status, ')')
+        } catch (e) {
+          console.warn('  KPI 評価失敗:', e.message)
+        }
+      }
+
       console.log(`[${new Date().toISOString()}] === 週次更新完了 ===\n`)
       resolve()
     })
