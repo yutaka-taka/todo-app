@@ -48,6 +48,15 @@ API_Key.txt
 SnapCrab_*.png
 競馬予想アプリ.txt
 
+# ML 生成物（大容量バイナリ）
+ml/dataset.parquet
+ml/models/
+ml/venv/
+
+# scripts: 生成・一時ファイル
+scripts/ml_dataset.bat
+scripts/.fetch_jra_full_progress.json
+
 # scripts: 一時進捗ファイル / ログ
 scripts/.backfill_progress.json
 scripts/.backfill_schedule_cache.json
