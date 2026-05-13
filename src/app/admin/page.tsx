@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import type { TaskKey, TaskStatus } from '@/app/api/admin/run-task/route'
 
 interface AdminStats {
   db: {
@@ -57,12 +58,28 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+const TASK_DEFS: { key: TaskKey; label: string; desc: string; color: string }[] = [
+  { key: 'weekly_update',  label: '結果取り込み',     desc: '前回実行日〜今日のJRAレース結果をDBに取り込み、HorseStat再構築・KPI評価まで実行', color: 'blue' },
+  { key: 'weekly_prefetch', label: '翌週末事前取り込み', desc: '今週末の出走表を事前に取得してDBに登録（金曜実行想定）', color: 'teal' },
+  { key: 'ml_dataset',    label: 'データセット生成',  desc: 'DB全レース結果からLightGBM訓練用dataset.parquetを生成（2021-01-01〜今日）', color: 'amber' },
+  { key: 'ml_retrain',    label: 'LightGBM再訓練',   desc: 'dataset.parquetを使ってモデルを再訓練しmodel.onnxを更新', color: 'purple' },
+]
+
+const COLOR_MAP: Record<string, string> = {
+  blue:   'bg-blue-700 hover:bg-blue-600 disabled:bg-blue-900',
+  teal:   'bg-teal-700 hover:bg-teal-600 disabled:bg-teal-900',
+  amber:  'bg-amber-700 hover:bg-amber-600 disabled:bg-amber-900',
+  purple: 'bg-purple-700 hover:bg-purple-600 disabled:bg-purple-900',
+}
+
 export default function AdminPage() {
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reanalyzing, setReanalyzing] = useState(false)
   const [reanalyzMsg, setReanalyzMsg] = useState<string | null>(null)
+  const [taskStatuses, setTaskStatuses] = useState<Record<string, TaskStatus>>({})
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function fetchStats() {
     setLoading(true)
@@ -80,6 +97,45 @@ export default function AdminPage() {
   }
 
   useEffect(() => { fetchStats() }, [])
+
+  // タスク状態ポーリング（実行中のタスクがある間 3秒ごと）
+  async function pollTaskStatuses() {
+    try {
+      const res = await fetch('/api/admin/run-task')
+      if (!res.ok) return
+      const data: Record<string, TaskStatus> = await res.json()
+      setTaskStatuses(data)
+      const anyRunning = Object.values(data).some(s => s.running)
+      if (anyRunning) {
+        pollRef.current = setTimeout(pollTaskStatuses, 3000)
+      } else {
+        pollRef.current = null
+      }
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    return () => { if (pollRef.current) clearTimeout(pollRef.current) }
+  }, [])
+
+  async function runTask(task: TaskKey) {
+    try {
+      const res = await fetch('/api/admin/run-task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task }),
+      })
+      const data = await res.json()
+      if (data.status === 'started' || data.status === 'already_running') {
+        // ポーリング開始（既に動いている場合は再スケジュールしない）
+        if (!pollRef.current) {
+          pollRef.current = setTimeout(pollTaskStatuses, 500)
+        }
+      }
+    } catch (e) {
+      console.error('runTask error', e)
+    }
+  }
 
   async function runReanalyze() {
     setReanalyzing(true)
@@ -246,7 +302,70 @@ export default function AdminPage() {
               </Section>
             )}
 
-            <Section title="操作">
+            <Section title="タスク強制実行">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {TASK_DEFS.map(({ key, label, desc, color }) => {
+                  const s = taskStatuses[key]
+                  const isRunning = s?.running ?? false
+                  const isDone = !isRunning && s?.finishedAt
+                  const isError = isDone && s?.exitCode !== 0
+                  const btnClass = `px-3 py-1.5 rounded text-xs font-semibold text-white transition disabled:opacity-60 disabled:cursor-not-allowed ${COLOR_MAP[color]}`
+                  const elapsed = isRunning && s?.startedAt
+                    ? `${Math.round((Date.now() - new Date(s.startedAt).getTime()) / 1000)}秒`
+                    : null
+
+                  return (
+                    <div key={key} className="p-4 bg-gray-800 rounded border border-gray-700 flex flex-col gap-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="font-medium text-sm flex items-center gap-2">
+                            {label}
+                            {isRunning && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300 animate-pulse">
+                                実行中{elapsed ? ` ${elapsed}` : ''}
+                              </span>
+                            )}
+                            {isDone && !isError && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-green-900/60 text-green-300">完了</span>
+                            )}
+                            {isError && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/60 text-red-300">
+                                エラー (exit {s.exitCode})
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-0.5">{desc}</div>
+                        </div>
+                        <button
+                          onClick={() => runTask(key)}
+                          disabled={isRunning}
+                          className={btnClass}
+                        >
+                          {isRunning ? '実行中…' : '実行'}
+                        </button>
+                      </div>
+                      {s?.lastLines && s.lastLines.length > 0 && (
+                        <pre className="text-[10px] text-gray-400 bg-gray-900 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap leading-4">
+                          {s.lastLines.slice(-30).join('\n')}
+                        </pre>
+                      )}
+                      {isDone && s?.startedAt && s?.finishedAt && (
+                        <div className="text-[10px] text-gray-600">
+                          {new Date(s.startedAt).toLocaleTimeString('ja-JP')} →{' '}
+                          {new Date(s.finishedAt).toLocaleTimeString('ja-JP')}（
+                          {Math.round((new Date(s.finishedAt).getTime() - new Date(s.startedAt).getTime()) / 1000)}秒）
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-gray-600 mt-2">
+                ※ 結果取り込みは前回実行日の翌日から今日まで自動判定。何度実行しても重複なし。
+              </p>
+            </Section>
+
+            <Section title="操作（コマンドリファレンス）">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                 <div className="p-4 bg-gray-800 rounded border border-gray-700">
                   <div className="font-medium mb-2">データ取り込み</div>
