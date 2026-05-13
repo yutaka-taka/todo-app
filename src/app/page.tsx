@@ -987,6 +987,12 @@ export default function Home() {
               <span>🧠</span>
               <span>学習</span>
             </button>
+            <a
+              href="/admin"
+              className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-slate-400/50 hover:text-slate-300 transition-all"
+            >
+              <span>⚙</span>
+            </a>
           </div>
         </div>
       </header>
