@@ -142,6 +142,18 @@ function normalizeGrade(className) {
   return '通常'
 }
 
+// レース名中の (G1)/(G2)/(G3) からグレードを判定する。
+// クラス欄(RaceData02)はグレードを持たないことが多いため、名前を優先する。
+// 障害(J.G1 等)は平地グレードに含めない。
+function gradeFromName(name) {
+  if (!name) return null
+  if (/\(?\s*J\s*[.\-]?\s*G\s*[I1Ⅰ2Ⅱ3Ⅲ]/i.test(name) || name.includes('障害')) return null
+  if (/\(\s*G\s*(?:1|I|Ⅰ)\s*\)/i.test(name)) return 'G1'
+  if (/\(\s*G\s*(?:2|II|Ⅱ)\s*\)/i.test(name)) return 'G2'
+  if (/\(\s*G\s*(?:3|III|Ⅲ)\s*\)/i.test(name)) return 'G3'
+  return null
+}
+
 // レース結果ページをパース
 function parseRaceResultHtml(raceId, html, kaisaiDate) {
   const out = {
@@ -206,6 +218,10 @@ function parseRaceResultHtml(raceId, html, kaisaiDate) {
       out.grade = normalizeGrade(classM[1])
     }
   }
+
+  // レース名に含まれる (G1)/(G2)/(G3) を最優先（クラス欄はグレードを持たないことが多い）
+  const nameGrade = gradeFromName(out.raceName)
+  if (nameGrade) out.grade = nameGrade
 
   // 結果テーブル
   const tableM = html.match(/<table[^>]+class="[^"]*RaceTable01[^"]*"[^>]*>([\s\S]*?)<\/table>/i)

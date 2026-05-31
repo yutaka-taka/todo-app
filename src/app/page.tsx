@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { format, isSunday } from 'date-fns'
 import { ja } from 'date-fns/locale'
+import type { TaskKey, TaskStatus } from '@/app/api/admin/run-task/types'
 
 // ---- Types ----
 interface RaceEntry {
@@ -160,6 +161,38 @@ function Spinner({ size = 5 }: { size?: number }) {
   )
 }
 
+// ---- 管理タスク定義（/api/admin/run-task と連動） ----
+const ADMIN_TASKS: Record<TaskKey, { label: string; emoji: string; timing: string; desc: string; cls: string }> = {
+  weekly_update: {
+    label: '結果取り込み',
+    emoji: '📥',
+    timing: '毎週 日曜夜〜月曜',
+    desc: '前回実行日〜今日のJRAレース結果をDBへ取込み＋HorseStat再構築',
+    cls: 'from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600',
+  },
+  weekly_prefetch: {
+    label: '翌週末事前取り込み',
+    emoji: '🗓',
+    timing: '毎週 金曜',
+    desc: '今週末の出走表を事前に取得してDBへ登録',
+    cls: 'from-teal-600 to-cyan-700 hover:from-teal-500 hover:to-cyan-600',
+  },
+  ml_dataset: {
+    label: 'データセット生成',
+    emoji: '📊',
+    timing: '月1回 / 全レース再検証後',
+    desc: '全レース結果からLightGBM訓練用 dataset.parquet を生成',
+    cls: 'from-amber-600 to-orange-700 hover:from-amber-500 hover:to-orange-600',
+  },
+  ml_retrain: {
+    label: 'LightGBM再訓練',
+    emoji: '🤖',
+    timing: '月1回 / データセット生成後',
+    desc: 'dataset.parquet を使ってモデルを再訓練し model.onnx を更新',
+    cls: 'from-purple-600 to-fuchsia-700 hover:from-purple-500 hover:to-fuchsia-600',
+  },
+}
+
 const SELECTION_REASON_LABELS: Record<string, { label: string; color: string }> = {
   top1:           { label: '本命',       color: 'bg-amber-500/20 text-amber-300' },
   top2:           { label: '対抗',       color: 'bg-blue-500/20 text-blue-300' },
@@ -170,10 +203,12 @@ const SELECTION_REASON_LABELS: Record<string, { label: string; color: string }> 
 }
 
 function formatWeight(w: number | null | undefined, c: number | null | undefined): string {
-  if (w == null) return '-'
+  const sign = (v: number) => (v > 0 ? '+' : v < 0 ? '' : '±')
+  if (w == null && c == null) return '-'
+  // 絶対体重未入力でも増減だけは表示する（＋の増減が記載されない不具合の修正）
+  if (w == null) return `(${sign(c as number)}${c})`
   if (c == null) return `${w}kg`
-  const sign = c > 0 ? '+' : c < 0 ? '' : '±'
-  return `${w}kg (${sign}${c})`
+  return `${w}kg (${sign(c)}${c})`
 }
 
 // ---- PlaceRateBar ----
@@ -332,6 +367,20 @@ export default function Home() {
   const [pedigreeResult, setPedigreeResult] = useState<{ updated: number; message: string } | null>(null)
   const [pedigreeError, setPedigreeError] = useState<string | null>(null)
 
+  // 管理タスク（結果取り込み・MLパイプライン）
+  const [taskStatuses, setTaskStatuses] = useState<Record<string, TaskStatus>>({})
+  const taskPollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 統計情報（折り畳み）
+  const [adminStats, setAdminStats] = useState<{
+    db: { raceCount: number; resultCount: number; horseCount: number; predCount: number; lastIngestion: string | null; lastRaceDate: string | null }
+    kpi: { total: number; hit1: number; hit2: number; hit1Rate: number | null; hit2Rate: number | null }
+    ml: { feature_cols?: string[]; test_auc?: number; test_loss?: number; hit1_rate?: number; hit2_rate?: number; trained_at?: string; n_train?: number } | null
+    algo: { version: number; accuracy: number | null; analyzedCount: number; updatedAt: string } | null
+  } | null>(null)
+  const [showStats, setShowStats] = useState(false)
+  const [loadingStats, setLoadingStats] = useState(false)
+
   // 的中精度最適化（ブラインド全因子グリッドサーチ）
   const [blindOptimizing, setBlindOptimizing] = useState(false)
   const [blindOptimizeResult, setBlindOptimizeResult] = useState<{
@@ -394,6 +443,55 @@ export default function Home() {
       setOptimizing(false)
     }
   }
+
+  const fetchAdminStats = useCallback(async () => {
+    setLoadingStats(true)
+    try {
+      const res = await fetch('/api/admin/stats')
+      if (res.ok) setAdminStats(await res.json())
+    } catch {
+      /* silent */
+    } finally {
+      setLoadingStats(false)
+    }
+  }, [])
+
+  const pollTaskStatuses = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/run-task')
+      if (!res.ok) return
+      const data: Record<string, TaskStatus> = await res.json()
+      setTaskStatuses(data)
+      const anyRunning = Object.values(data).some((s) => s.running)
+      if (anyRunning) {
+        taskPollRef.current = setTimeout(pollTaskStatuses, 3000)
+      } else {
+        taskPollRef.current = null
+        fetchLearnStatus()
+        if (showStats) fetchAdminStats()
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [showStats, fetchAdminStats, fetchLearnStatus])
+
+  const runTask = useCallback(async (task: TaskKey) => {
+    try {
+      const res = await fetch('/api/admin/run-task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task }),
+      })
+      const data = await res.json()
+      if (data.status === 'started' || data.status === 'already_running') {
+        if (!taskPollRef.current) {
+          taskPollRef.current = setTimeout(pollTaskStatuses, 500)
+        }
+      }
+    } catch (e) {
+      console.error('runTask error', e)
+    }
+  }, [pollTaskStatuses])
 
   const handleBlindOptimize = async () => {
     setBlindOptimizing(true)
@@ -522,8 +620,22 @@ export default function Home() {
   }, [showHorsesPanel, fetchHorses])
 
   useEffect(() => {
-    if (showLearnPanel) fetchRacesForResult()
-  }, [showLearnPanel, fetchRacesForResult])
+    if (showLearnPanel) {
+      fetchRacesForResult()
+      // パネル表示時にタスク状態も最新化
+      pollTaskStatuses()
+    }
+  }, [showLearnPanel, fetchRacesForResult, pollTaskStatuses])
+
+  useEffect(() => {
+    if (showStats) fetchAdminStats()
+  }, [showStats, fetchAdminStats])
+
+  useEffect(() => {
+    return () => {
+      if (taskPollRef.current) clearTimeout(taskPollRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (showHistoryPanel) fetchHistoryRaces(historyGradeFilter, historyYearFilter, 1)
@@ -856,6 +968,8 @@ export default function Home() {
     setReanalyzing(true)
     setReanalyzeError(null)
     setReanalyzeResult(null)
+    setBlindOptimizeResult(null)
+    setBlindOptimizeError(null)
     try {
       const res = await fetch('/api/reanalyze', { method: 'POST' })
       const data = await res.json()
@@ -864,9 +978,14 @@ export default function Home() {
       await fetchLearnStatus()
     } catch (e) {
       setReanalyzeError(e instanceof Error ? e.message : '全レース再検証に失敗しました')
-    } finally {
       setReanalyzing(false)
+      return
     }
+    // 再検証成功 → 続けて的中精度最適化（重み係数の自動最適化）を実行
+    // スピナーがちらつかないよう blindOptimizing を先に true にしてから reanalyzing を false に
+    setBlindOptimizing(true)
+    setReanalyzing(false)
+    await handleBlindOptimize()
   }
 
   const handleVerify = async () => {
@@ -987,12 +1106,6 @@ export default function Home() {
               <span>🧠</span>
               <span>学習</span>
             </button>
-            <a
-              href="/admin"
-              className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border border-[#1e2d4a] text-slate-400 hover:border-slate-400/50 hover:text-slate-300 transition-all"
-            >
-              <span>⚙</span>
-            </a>
           </div>
         </div>
       </header>
@@ -1526,7 +1639,58 @@ export default function Home() {
               </>
             )}
 
-            {/* ① 過去レース学習ボタン（3件ずつ） */}
+            {/* ===== 📅 定期取り込み ===== */}
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-xs font-bold text-slate-300">📅 定期取り込み</h3>
+              <span className="text-[9px] text-slate-600">JRAデータ同期</span>
+            </div>
+            <div className="space-y-2 mb-3">
+              {(['weekly_update', 'weekly_prefetch'] as TaskKey[]).map((key) => {
+                const t = ADMIN_TASKS[key]
+                const s = taskStatuses[key]
+                const isRunning = s?.running ?? false
+                const isDone = !isRunning && !!s?.finishedAt
+                const isError = isDone && s?.exitCode !== 0
+                const elapsed = isRunning && s?.startedAt
+                  ? `${Math.round((Date.now() - new Date(s.startedAt).getTime()) / 1000)}秒`
+                  : null
+                return (
+                  <div key={key} className="bg-[#080c18] rounded-xl p-3">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-sm font-bold text-white">{t.emoji} {t.label}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700/60 text-slate-300">{t.timing}</span>
+                          {isRunning && <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-900/60 text-blue-300 animate-pulse">実行中{elapsed ? ` ${elapsed}` : ''}</span>}
+                          {isDone && !isError && <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-900/60 text-emerald-300">完了</span>}
+                          {isError && <span className="px-1.5 py-0.5 rounded text-[9px] bg-red-900/60 text-red-300">エラー (exit {s.exitCode})</span>}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">{t.desc}</p>
+                      </div>
+                      <button
+                        onClick={() => runTask(key)}
+                        disabled={isRunning}
+                        className={`shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white bg-gradient-to-r ${t.cls} transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                      >
+                        {isRunning ? '実行中…' : '実行'}
+                      </button>
+                    </div>
+                    {s?.lastLines && s.lastLines.length > 0 && (
+                      <pre className="mt-1 text-[9px] text-slate-400 bg-[#04070f] rounded p-1.5 max-h-20 overflow-y-auto whitespace-pre-wrap leading-3">{s.lastLines.slice(-12).join('\n')}</pre>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* 区切り線 */}
+            <div className="my-3 border-t border-[#1e2d4a]" />
+
+            {/* ===== 🧠 学習 ===== */}
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-xs font-bold text-slate-300">🧠 学習</h3>
+              <span className="text-[9px] text-slate-600">結果取り込み後に実行</span>
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={handleLearn}
@@ -1571,6 +1735,9 @@ export default function Home() {
                 )}
               </button>
             </div>
+            <p className="text-[10px] text-slate-600 text-center mt-1">
+              実行タイミング：<span className="text-slate-400">結果取り込み後（毎週月曜以降）</span>
+            </p>
 
             {learnError && (
               <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
@@ -1622,30 +1789,88 @@ export default function Home() {
             {/* 区切り線 */}
             <div className="my-3 border-t border-[#1e2d4a]" />
 
-            {/* ③ 全レース再検証ボタン */}
+            {/* ③ 全レース再検証ボタン（旧 HorseStat再構築 と統合 / 完了後に 的中精度最適化 を自動実行） */}
             <button
               onClick={() => setReanalyzeConfirm(true)}
-              disabled={learning || learningAll || verifying || reanalyzing}
+              disabled={learning || learningAll || verifying || reanalyzing || blindOptimizing}
               className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-amber-700 to-orange-700 hover:from-amber-600 hover:to-orange-600 text-white"
             >
               {reanalyzing ? (
                 <>
                   <Spinner size={4} />
-                  <span className="pulse-gold">全データ再構築・精緻化中... (60-120秒)</span>
+                  <span className="pulse-gold">[1/2] HorseStat再構築中... (60-120秒)</span>
+                </>
+              ) : blindOptimizing ? (
+                <>
+                  <Spinner size={4} />
+                  <span className="pulse-gold">[2/2] 重み係数を自動最適化中... (1-2分)</span>
                 </>
               ) : (
                 <>
                   <span>🔄</span>
-                  <span>全レース再検証（精度向上）</span>
+                  <span>全レース再検証（HorseStat再構築＋重み最適化）</span>
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-900/40 text-amber-200">月1回 / 精度低下時</span>
                 </>
               )}
             </button>
-            <p className="text-[10px] text-slate-600 text-center mt-1">
-              全RaceResultからHorseStatを再構築し、AIが予想ルールを精緻化します
+            <p className="text-[10px] text-slate-600 text-center mt-1 leading-relaxed">
+              ① 全RaceResultからHorseStatを再構築し、AIが予想ルールを精緻化<br />
+              ② 続けて全G1ブラインド評価で重み係数（AlgorithmConfig）を自動最適化
             </p>
 
-            {/* 学習リセット */}
+            {/* 区切り線 */}
             <div className="my-3 border-t border-[#1e2d4a]" />
+
+            {/* ===== 🤖 MLモデル更新 ===== */}
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-xs font-bold text-slate-300">🤖 MLモデル更新</h3>
+              <span className="text-[9px] text-slate-600">LightGBM + ONNX</span>
+            </div>
+            <div className="space-y-2 mb-1">
+              {(['ml_dataset', 'ml_retrain'] as TaskKey[]).map((key) => {
+                const t = ADMIN_TASKS[key]
+                const s = taskStatuses[key]
+                const isRunning = s?.running ?? false
+                const isDone = !isRunning && !!s?.finishedAt
+                const isError = isDone && s?.exitCode !== 0
+                const elapsed = isRunning && s?.startedAt
+                  ? `${Math.round((Date.now() - new Date(s.startedAt).getTime()) / 1000)}秒`
+                  : null
+                return (
+                  <div key={key} className="bg-[#080c18] rounded-xl p-3">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-sm font-bold text-white">{t.emoji} {t.label}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-700/60 text-slate-300">{t.timing}</span>
+                          {isRunning && <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-900/60 text-blue-300 animate-pulse">実行中{elapsed ? ` ${elapsed}` : ''}</span>}
+                          {isDone && !isError && <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-900/60 text-emerald-300">完了</span>}
+                          {isError && <span className="px-1.5 py-0.5 rounded text-[9px] bg-red-900/60 text-red-300">エラー (exit {s.exitCode})</span>}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">{t.desc}</p>
+                      </div>
+                      <button
+                        onClick={() => runTask(key)}
+                        disabled={isRunning}
+                        className={`shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white bg-gradient-to-r ${t.cls} transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                      >
+                        {isRunning ? '実行中…' : '実行'}
+                      </button>
+                    </div>
+                    {s?.lastLines && s.lastLines.length > 0 && (
+                      <pre className="mt-1 text-[9px] text-slate-400 bg-[#04070f] rounded p-1.5 max-h-20 overflow-y-auto whitespace-pre-wrap leading-3">{s.lastLines.slice(-12).join('\n')}</pre>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* ===== ⚠️ 危険操作 ===== */}
+            <div className="my-3 border-t border-[#1e2d4a]" />
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-xs font-bold text-red-400">⚠️ 危険操作</h3>
+              <span className="text-[9px] text-slate-600">異常時のみ</span>
+            </div>
             <button
               onClick={() => setResetConfirmStep(1)}
               disabled={resetting || learning || learningAll || reanalyzing}
@@ -1654,7 +1879,10 @@ export default function Home() {
               {resetting ? (
                 <><Spinner size={4} /><span>リセット中...</span></>
               ) : (
-                <><span>⚠️</span><span>学習リセット</span></>
+                <>
+                  <span>⚠️</span><span>学習リセット</span>
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-900/40 text-red-300">異常時のみ</span>
+                </>
               )}
             </button>
             <p className="text-[10px] text-slate-600 text-center mt-1">
@@ -1743,7 +1971,7 @@ export default function Home() {
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-amber-400 text-sm">✓</span>
                   <p className="text-xs text-amber-400 font-medium">
-                    {reanalyzeResult.horsesSaved > 0
+                    [1/2] {reanalyzeResult.horsesSaved > 0
                       ? `${reanalyzeResult.horsesSaved}頭を再構築`
                       : '既存データを維持してルール精緻化'}
                     {reanalyzeResult.refinedAccuracy > 0
@@ -1762,94 +1990,9 @@ export default function Home() {
               </div>
             )}
 
-            {/* 区切り線 */}
-            <div className="my-3 border-t border-[#1e2d4a]" />
-
-            {/* ⑤ DB最適化 */}
-            {dbStats && (
-              <div className="mb-2 px-3 py-2 bg-[#080c18] rounded-xl flex items-center justify-between">
-                <div className="text-[10px] text-slate-500">
-                  <span>DB容量: </span>
-                  <span className="text-slate-300">{dbStats.dbSize}</span>
-                  {dbStats.totalDeadTuples > 0 && (
-                    <span className="ml-2 text-amber-500">不要データ: {dbStats.totalDeadTuples.toLocaleString()}件</span>
-                  )}
-                </div>
-                <span className="text-[10px] text-slate-600">最終VACUUM: {dbStats.lastVacuum}</span>
-              </div>
-            )}
-            <button
-              onClick={handleOptimize}
-              disabled={optimizing || learning || learningAll || reanalyzing}
-              className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-teal-700 to-cyan-700 hover:from-teal-600 hover:to-cyan-600 text-white"
-            >
-              {optimizing ? (
-                <><Spinner size={4} /><span className="pulse-gold">VACUUM ANALYZE 実行中...</span></>
-              ) : (
-                <><span>🗄️</span><span>DB最適化</span></>
-              )}
-            </button>
-            <p className="text-[10px] text-slate-600 text-center mt-1">
-              VACUUM ANALYZEで不要データを削除し、クエリ性能を向上させます
-            </p>
-
-            {optimizeError && (
-              <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
-                {optimizeError}
-              </div>
-            )}
-
-            {optimizeResult && (
-              <div className="mt-2 fade-in p-3 bg-teal-900/20 border border-teal-800/30 rounded-xl">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-teal-400 text-sm">✓</span>
-                  <p className="text-xs text-teal-400 font-medium">
-                    最適化完了（{(optimizeResult.elapsed / 1000).toFixed(1)}秒）
-                  </p>
-                </div>
-                <div className="flex justify-between text-[10px] mb-2">
-                  <span className="text-slate-500">DB容量</span>
-                  <span className="text-slate-300">{optimizeResult.dbSize}</span>
-                </div>
-                <div className="flex justify-between text-[10px] mb-2">
-                  <span className="text-slate-500">残不要データ</span>
-                  <span className={optimizeResult.totalDeadTuples === 0 ? 'text-emerald-400' : 'text-amber-400'}>
-                    {optimizeResult.totalDeadTuples === 0 ? 'なし' : `${optimizeResult.totalDeadTuples}件`}
-                  </span>
-                </div>
-                <div className="space-y-1 mt-2 border-t border-teal-800/30 pt-2">
-                  {optimizeResult.tables.slice(0, 5).map((t) => (
-                    <div key={t.name} className="flex justify-between text-[10px]">
-                      <span className="text-slate-500">{t.name}</span>
-                      <span className="text-slate-400">{t.size} / {t.liveTuples.toLocaleString()}件</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 区切り線 */}
-            <div className="my-3 border-t border-[#1e2d4a]" />
-
-            {/* ⑤-2 的中精度最適化（ブラインド全因子グリッドサーチ） */}
-            <button
-              onClick={handleBlindOptimize}
-              disabled={blindOptimizing || optimizing || learning || learningAll || reanalyzing}
-              className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-fuchsia-700 to-purple-700 hover:from-fuchsia-600 hover:to-purple-600 text-white"
-            >
-              {blindOptimizing ? (
-                <><Spinner size={4} /><span className="pulse-gold">真ブラインド最適化中（1〜2分）...</span></>
-              ) : (
-                <><span>🎯</span><span>的中精度最適化</span></>
-              )}
-            </button>
-            <p className="text-[10px] text-slate-600 text-center mt-1 leading-relaxed">
-              全G1レースを時系列ブラインド評価し、ウェイトを自動最適化（Claude API不要）
-            </p>
-
             {blindOptimizeError && (
               <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
-                {blindOptimizeError}
+                [2/2] 重み係数最適化エラー: {blindOptimizeError}
               </div>
             )}
 
@@ -1858,7 +2001,7 @@ export default function Home() {
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-fuchsia-400 text-sm">✓</span>
                   <p className="text-xs text-fuchsia-400 font-medium">
-                    最適化完了（{blindOptimizeResult.elapsed}秒）
+                    [2/2] 重み係数の最適化完了（{blindOptimizeResult.elapsed}秒）
                     {blindOptimizeResult.version != null && (
                       <span className="ml-2 text-fuchsia-300/70">v{blindOptimizeResult.version} 保存</span>
                     )}
@@ -1919,6 +2062,223 @@ export default function Home() {
                       ))}
                     </div>
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* 区切り線 */}
+            <div className="my-3 border-t border-[#1e2d4a]" />
+
+            {/* ===== 🛠 メンテナンス ===== */}
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-xs font-bold text-slate-300">🛠 メンテナンス</h3>
+              <span className="text-[9px] text-slate-600">月1回</span>
+            </div>
+
+            {/* ⑤ DB最適化 */}
+            {dbStats && (
+              <div className="mb-2 px-3 py-2 bg-[#080c18] rounded-xl flex items-center justify-between">
+                <div className="text-[10px] text-slate-500">
+                  <span>DB容量: </span>
+                  <span className="text-slate-300">{dbStats.dbSize}</span>
+                  {dbStats.totalDeadTuples > 0 && (
+                    <span className="ml-2 text-amber-500">不要データ: {dbStats.totalDeadTuples.toLocaleString()}件</span>
+                  )}
+                </div>
+                <span className="text-[10px] text-slate-600">最終VACUUM: {dbStats.lastVacuum}</span>
+              </div>
+            )}
+            <button
+              onClick={handleOptimize}
+              disabled={optimizing || learning || learningAll || reanalyzing}
+              className="w-full py-2.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-teal-700 to-cyan-700 hover:from-teal-600 hover:to-cyan-600 text-white"
+            >
+              {optimizing ? (
+                <><Spinner size={4} /><span className="pulse-gold">VACUUM ANALYZE 実行中...</span></>
+              ) : (
+                <>
+                  <span>🗄️</span><span>DB最適化</span>
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-teal-900/40 text-teal-200">月1回</span>
+                </>
+              )}
+            </button>
+            <p className="text-[10px] text-slate-600 text-center mt-1">
+              VACUUM ANALYZEで不要データを削除し、クエリ性能を向上させます
+            </p>
+
+            {optimizeError && (
+              <div className="mt-2 p-2 bg-red-900/30 border border-red-800/50 rounded-xl text-xs text-red-400">
+                {optimizeError}
+              </div>
+            )}
+
+            {optimizeResult && (
+              <div className="mt-2 fade-in p-3 bg-teal-900/20 border border-teal-800/30 rounded-xl">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-teal-400 text-sm">✓</span>
+                  <p className="text-xs text-teal-400 font-medium">
+                    最適化完了（{(optimizeResult.elapsed / 1000).toFixed(1)}秒）
+                  </p>
+                </div>
+                <div className="flex justify-between text-[10px] mb-2">
+                  <span className="text-slate-500">DB容量</span>
+                  <span className="text-slate-300">{optimizeResult.dbSize}</span>
+                </div>
+                <div className="flex justify-between text-[10px] mb-2">
+                  <span className="text-slate-500">残不要データ</span>
+                  <span className={optimizeResult.totalDeadTuples === 0 ? 'text-emerald-400' : 'text-amber-400'}>
+                    {optimizeResult.totalDeadTuples === 0 ? 'なし' : `${optimizeResult.totalDeadTuples}件`}
+                  </span>
+                </div>
+                <div className="space-y-1 mt-2 border-t border-teal-800/30 pt-2">
+                  {optimizeResult.tables.slice(0, 5).map((t) => (
+                    <div key={t.name} className="flex justify-between text-[10px]">
+                      <span className="text-slate-500">{t.name}</span>
+                      <span className="text-slate-400">{t.size} / {t.liveTuples.toLocaleString()}件</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ⑤-2 的中精度最適化は「全レース再検証」完了後に自動実行されるため、独立ボタンは廃止 */}
+
+            {/* 区切り線 */}
+            <div className="my-3 border-t border-[#1e2d4a]" />
+
+            {/* ===== 📈 統計表示（折り畳み） ===== */}
+            <button
+              onClick={() => setShowStats(!showStats)}
+              className="w-full py-2 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 border border-[#1e2d4a] text-slate-300 hover:border-slate-500 hover:text-white"
+            >
+              <span>📈</span>
+              <span>{showStats ? '統計を隠す' : '統計を表示'}</span>
+              <span className="text-[9px] text-slate-500">DB / KPI / MLモデル</span>
+              <span className="text-slate-500">{showStats ? '▲' : '▼'}</span>
+            </button>
+
+            {showStats && (
+              <div className="mt-3 fade-in space-y-3">
+                {loadingStats && !adminStats ? (
+                  <div className="flex justify-center py-4"><Spinner size={4} /></div>
+                ) : adminStats ? (
+                  <>
+                    {/* データベース */}
+                    <div>
+                      <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">データベース</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-[#080c18] rounded-lg p-2">
+                          <div className="text-[9px] text-slate-500">総レース数</div>
+                          <div className="text-base font-bold text-white font-mono">{adminStats.db.raceCount.toLocaleString()}</div>
+                        </div>
+                        <div className="bg-[#080c18] rounded-lg p-2">
+                          <div className="text-[9px] text-slate-500">総結果数</div>
+                          <div className="text-base font-bold text-white font-mono">{adminStats.db.resultCount.toLocaleString()}</div>
+                        </div>
+                        <div className="bg-[#080c18] rounded-lg p-2">
+                          <div className="text-[9px] text-slate-500">HorseStat</div>
+                          <div className="text-base font-bold text-white font-mono">{adminStats.db.horseCount.toLocaleString()}</div>
+                        </div>
+                        <div className="bg-[#080c18] rounded-lg p-2">
+                          <div className="text-[9px] text-slate-500">予想生成数</div>
+                          <div className="text-base font-bold text-white font-mono">{adminStats.db.predCount.toLocaleString()}</div>
+                        </div>
+                        <div className="bg-[#080c18] rounded-lg p-2 col-span-2">
+                          <div className="flex justify-between">
+                            <span className="text-[9px] text-slate-500">最新レース</span>
+                            <span className="text-[10px] text-slate-300 font-mono">{adminStats.db.lastRaceDate ? new Date(adminStats.db.lastRaceDate).toLocaleDateString('ja-JP') : '—'}</span>
+                          </div>
+                          <div className="flex justify-between mt-0.5">
+                            <span className="text-[9px] text-slate-500">最終取り込み</span>
+                            <span className="text-[10px] text-slate-300 font-mono">{adminStats.db.lastIngestion ? new Date(adminStats.db.lastIngestion).toLocaleDateString('ja-JP') : '—'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* KPI */}
+                    <div>
+                      <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                        直近{adminStats.kpi.total}レース KPI
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className={`rounded-lg p-2 ${(adminStats.kpi.hit1Rate ?? 0) >= 0.92 ? 'bg-emerald-900/30 border border-emerald-700/40' : 'bg-[#080c18]'}`}>
+                          <div className="text-[9px] text-slate-500">Hit@5(1) 目標92%</div>
+                          <div className={`text-base font-bold font-mono ${(adminStats.kpi.hit1Rate ?? 0) >= 0.92 ? 'text-emerald-300' : 'text-white'}`}>
+                            {adminStats.kpi.hit1Rate != null ? `${(adminStats.kpi.hit1Rate * 100).toFixed(1)}%` : '—'}
+                          </div>
+                          <div className="text-[9px] text-slate-600">{adminStats.kpi.hit1}/{adminStats.kpi.total}</div>
+                        </div>
+                        <div className={`rounded-lg p-2 ${(adminStats.kpi.hit2Rate ?? 0) >= 0.35 ? 'bg-emerald-900/30 border border-emerald-700/40' : 'bg-[#080c18]'}`}>
+                          <div className="text-[9px] text-slate-500">Hit@5(2) 目標35%</div>
+                          <div className={`text-base font-bold font-mono ${(adminStats.kpi.hit2Rate ?? 0) >= 0.35 ? 'text-emerald-300' : 'text-white'}`}>
+                            {adminStats.kpi.hit2Rate != null ? `${(adminStats.kpi.hit2Rate * 100).toFixed(1)}%` : '—'}
+                          </div>
+                          <div className="text-[9px] text-slate-600">{adminStats.kpi.hit2}/{adminStats.kpi.total}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* MLモデル */}
+                    {adminStats.ml && (
+                      <div>
+                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">MLモデル (LightGBM + ONNX)</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className={`rounded-lg p-2 ${(adminStats.ml.test_auc ?? 0) >= 0.99 ? 'bg-emerald-900/30 border border-emerald-700/40' : 'bg-[#080c18]'}`}>
+                            <div className="text-[9px] text-slate-500">Test AUC</div>
+                            <div className="text-base font-bold text-white font-mono">{adminStats.ml.test_auc != null ? adminStats.ml.test_auc.toFixed(4) : '—'}</div>
+                          </div>
+                          <div className="bg-[#080c18] rounded-lg p-2">
+                            <div className="text-[9px] text-slate-500">LogLoss</div>
+                            <div className="text-base font-bold text-white font-mono">{adminStats.ml.test_loss != null ? adminStats.ml.test_loss.toFixed(4) : '—'}</div>
+                          </div>
+                          <div className="bg-[#080c18] rounded-lg p-2">
+                            <div className="text-[9px] text-slate-500">特徴量数</div>
+                            <div className="text-base font-bold text-white font-mono">{adminStats.ml.feature_cols?.length ?? '—'}</div>
+                          </div>
+                          <div className="bg-[#080c18] rounded-lg p-2">
+                            <div className="text-[9px] text-slate-500">訓練件数</div>
+                            <div className="text-base font-bold text-white font-mono">{adminStats.ml.n_train?.toLocaleString() ?? '—'}</div>
+                          </div>
+                          {adminStats.ml.trained_at && (
+                            <div className="bg-[#080c18] rounded-lg p-2 col-span-2">
+                              <div className="flex justify-between">
+                                <span className="text-[9px] text-slate-500">訓練日時</span>
+                                <span className="text-[10px] text-slate-300 font-mono">{new Date(adminStats.ml.trained_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* アルゴリズム */}
+                    {adminStats.algo && (
+                      <div>
+                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">アルゴリズム設定</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="bg-[#080c18] rounded-lg p-2">
+                            <div className="text-[9px] text-slate-500">バージョン</div>
+                            <div className="text-base font-bold text-white font-mono">v{adminStats.algo.version}</div>
+                          </div>
+                          <div className="bg-[#080c18] rounded-lg p-2">
+                            <div className="text-[9px] text-slate-500">推定精度</div>
+                            <div className="text-base font-bold text-white font-mono">{adminStats.algo.accuracy != null ? `${adminStats.algo.accuracy.toFixed(1)}%` : '—'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={fetchAdminStats}
+                      disabled={loadingStats}
+                      className="w-full py-1.5 rounded-lg text-[10px] text-slate-400 border border-[#1e2d4a] hover:border-slate-500 hover:text-white transition-all disabled:opacity-50"
+                    >
+                      {loadingStats ? '更新中…' : '🔄 統計を更新'}
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-[10px] text-slate-500 text-center py-3">統計の取得に失敗しました</p>
                 )}
               </div>
             )}
@@ -2669,7 +3029,7 @@ export default function Home() {
                                 <span className="text-xs text-slate-500 font-mono">{pred.horseNumber}番</span>
                               )}
                               <span className="text-base font-bold text-white truncate">{pred.horseName}</span>
-                              {pred.horseWeight != null && (
+                              {(pred.horseWeight != null || pred.weightChange != null) && (
                                 <span className="text-[10px] text-slate-400 font-mono flex-shrink-0">
                                   {formatWeight(pred.horseWeight, pred.weightChange)}
                                 </span>

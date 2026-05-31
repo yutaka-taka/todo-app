@@ -719,6 +719,10 @@ export interface ScoringOptions {
   softmaxTemperature?: number
   globalIntervalBaseline?: Record<string, number> | null  // §A ビン別全馬連対率
   selectionMode?: 'classic' | 'multiaxis'  // Phase 2: 多軸推奨
+  // ML アンサンブル: ML 連対確率(0..100)を馬ごとに合成し、5頭の「選定」を ML 主導にする。
+  // mlRateMap: horseName -> ML確率×100 / mlWeight: ML比率(0..1)。
+  // これを渡さないと ML は選定に影響しない（旧実装の欠陥）。
+  mlBlend?: { mlRateMap: Map<string, number>; mlWeight: number }
 }
 
 export function localScoreHorses(
@@ -773,6 +777,22 @@ export function localScoreHorses(
           s.placeRate += bonus
           if (s.factors._bonuses) s.factors._bonuses.oddsGap = (s.factors._bonuses.oddsGap ?? 0) + bonus
         }
+      }
+    }
+  }
+
+  // ========== ML アンサンブル合成（選定を ML 主導にする） ==========
+  // 旧実装は選定後に表示値だけ上書きしており、最強予測子の ML が「どの5頭か」に
+  // 全く効いていなかった。ここで合成して以降の sort→caps→selectFinalFive を ML 主導にする。
+  if (options.mlBlend) {
+    const mlWeight = Math.max(0, Math.min(1, options.mlBlend.mlWeight))
+    for (const s of scored) {
+      const ml = options.mlBlend.mlRateMap.get(s.horseName)
+      if (ml != null) {
+        // 表示用デバッグ値は読みやすい範囲にクランプ（ブレンド計算には生値を使用）
+        s._heuristicRate = Math.round(Math.min(s.placeRate, 99) * 10) / 10
+        s._mlRate = Math.round(ml * 10) / 10
+        s.placeRate = mlWeight * ml + (1 - mlWeight) * s.placeRate
       }
     }
   }

@@ -1,35 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { startOfDay, endOfDay, addDays } from 'date-fns'
 
 export const dynamic = 'force-dynamic'
 
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// JST のカレンダー上の「土〜日」週末を、サーバーTZに依存せず確実に算出する。
+// レース日時は DB 内で UTC午前0時(=JST 09:00) と JST午前0時(=UTC前日15:00) の
+// 2 規約が混在するため、JST の [土00:00, 月00:00) を窓にすれば両規約とも捕捉できる。
+// 土曜・日曜のいずれに見ても週末2日分を表示する（旧実装は日曜に当日のみで取りこぼしていた）。
+function weekendRangeJst(now: Date): { start: Date; end: Date } {
+  const nowJst = new Date(now.getTime() + JST_OFFSET_MS)
+  const dow = nowJst.getUTCDay() // JST基準の曜日（0=日, 6=土）
+  // 当該週末の土曜までの日数オフセット
+  const daysToSat = dow === 0 ? -1 : dow === 6 ? 0 : 6 - dow
+  const satJstMidnightUtc = Date.UTC(
+    nowJst.getUTCFullYear(), nowJst.getUTCMonth(), nowJst.getUTCDate() + daysToSat,
+  ) - JST_OFFSET_MS
+  return {
+    start: new Date(satJstMidnightUtc),                 // 土 00:00 JST
+    end: new Date(satJstMidnightUtc + 2 * DAY_MS),       // 月 00:00 JST（日曜いっぱいまで）
+  }
+}
+
 export async function GET() {
   try {
-    const today = new Date()
-    const dow = today.getDay() // 0=日, 6=土
-
-    let dayStart: Date
-    let dayEnd: Date
-
-    if (dow === 6) {
-      // 土曜: 当日（土）〜翌日（日）の2日間
-      dayStart = startOfDay(today)
-      dayEnd = endOfDay(addDays(today, 1))
-    } else if (dow === 0) {
-      // 日曜: 当日のみ
-      dayStart = startOfDay(today)
-      dayEnd = endOfDay(today)
-    } else {
-      // 平日: 次の土日両日
-      const saturday = addDays(today, 6 - dow)
-      dayStart = startOfDay(saturday)
-      dayEnd = endOfDay(addDays(saturday, 1))
-    }
+    const { start: dayStart, end: dayEnd } = weekendRangeJst(new Date())
 
     const races = await prisma.race.findMany({
       where: {
-        date: { gte: dayStart, lte: dayEnd },
+        date: { gte: dayStart, lt: dayEnd },
         grade: { in: ['G1', 'G2', 'G3'] },
       },
       include: {
@@ -38,8 +39,22 @@ export async function GET() {
       orderBy: [{ date: 'asc' }, { grade: 'asc' }, { name: 'asc' }],
     })
 
+    // 重複レースの表示統合: 同一レースが「正式名」と「別名(年付き)」で二重登録されている
+    // ことがある（例: 東京優駿 / 日本ダービー2026）。会場×馬場×距離×JST日付で畳み、
+    // 出走馬数が多く・年号サフィックスの無い綺麗な名前の方を代表に採用する。
+    const dedup = new Map<string, (typeof races)[number]>()
+    const score = (r: (typeof races)[number]) => r.entries.length * 1000 - (/\d{4}/.test(r.name) ? 1 : 0)
+    for (const r of races) {
+      const jstDay = new Date(new Date(r.date).getTime() + JST_OFFSET_MS).toISOString().slice(0, 10)
+      const key = `${r.venue}|${r.surface}|${r.distance}|${jstDay}`
+      const cur = dedup.get(key)
+      if (!cur || score(r) > score(cur)) dedup.set(key, r)
+    }
+    const deduped = Array.from(dedup.values()).sort((a, b) =>
+      a.date.getTime() - b.date.getTime() || a.grade.localeCompare(b.grade) || a.name.localeCompare(b.name))
+
     return NextResponse.json({
-      races,
+      races: deduped,
       targetDate: dayStart.toISOString(),
     })
   } catch (error) {

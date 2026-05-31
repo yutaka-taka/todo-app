@@ -108,24 +108,14 @@ async function main() {
       }
 
       if (!dryRun) {
-        // HorseStat 再構築
-        try {
-          console.log('  HorseStat 再構築中...')
-          const res = await fetch('http://localhost:3000/api/reanalyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: '{}',
-          })
-          if (res.ok) {
-            const data = await res.json()
-            console.log(`  HorseStat 再構築完了: ${data.horsesSaved ?? '?'} 頭`)
-          } else {
-            console.warn(`  HorseStat 再構築 HTTP ${res.status}`)
-          }
-        } catch (err) {
-          console.error('  HorseStat 再構築失敗:', err.message)
-          console.log('  (アプリが起動していない場合は手動で POST /api/reanalyze を実行してください)')
-        }
+        // HorseStat 再構築（スタンドアロン: アプリ起動不要。旧版は HTTP 依存で
+        // アプリ停止中は "fetch failed" となり統計が更新されなかった）
+        console.log('  HorseStat 再構築中（reanalyze.js）...')
+        const re = spawnSync('node', [path.join(__dirname, 'reanalyze.js')], {
+          stdio: 'inherit', cwd: path.join(__dirname, '..'),
+        })
+        if (re.status === 0) console.log('  HorseStat 再構築完了')
+        else console.error(`  HorseStat 再構築失敗 (exit ${re.status})`)
       }
 
       // KPI 評価 → .evaluation_log.json 追記

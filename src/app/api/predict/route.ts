@@ -87,57 +87,35 @@ export async function POST(request: NextRequest) {
         getGlobalIntervalBaseline(),
       ])
       const raceWithCond = { ...race, trackCondition: trackCondition ?? race.trackCondition ?? undefined, date: race.date }
-      const heuristicScored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'classic' })
-
-      // ML アンサンブル: ONNX モデルがあれば 0.7×ML + 0.3×Heuristic
-      let scored = heuristicScored
+      // ML アンサンブル: ONNX モデルがあれば ML確率を算出し、selectFinalFive の「選定」自体を
+      // ML 主導にする（scorer.ts の mlBlend オプション経由）。旧実装は選定後に表示値だけ
+      // 上書きしており、最強予測子の ML が picks に効いていなかった（重大バグ）。
       const mlAvailable = isMLModelAvailable()
+      let mlRateMap: Map<string, number> | null = null
       if (mlAvailable) {
         try {
           const statMap = new Map(stats.map(s => [s.horseName, s]))
-          // オッズランクを事前計算
           const sortedByOdds = [...entriesWithOdds].sort((a, b) => (a.oddsFloat ?? 999) - (b.oddsFloat ?? 999))
           const oddsRankMap = new Map(sortedByOdds.map((e, i) => [e.horseName, i + 1]))
-
           const mlInputs = entriesWithOdds.map(e => buildMLFeatures(
-            { ...e, jockey: e.jockey ?? null, trainer: null },
+            { ...e, jockey: e.jockey ?? null, trainer: e.trainer ?? null },
             raceWithCond,
             statMap.get(e.horseName) ?? null,
             oddsRankMap.get(e.horseName) ?? 9,
           ))
           const mlProbs = await predictML(mlInputs)
           if (mlProbs) {
-            const ML_WEIGHT  = Math.max(0, Math.min(1, parseFloat(process.env.ML_BLEND_RATIO ?? '0.7')))
-            const HEU_WEIGHT = 1 - ML_WEIGHT
-            const heuMap = new Map(heuristicScored.map(s => [s.horseName, s.placeRate]))
-            const mlRateMap  = new Map(entriesWithOdds.map((e, idx) => [e.horseName, (mlProbs[idx] ?? 0.11) * 100]))
-            const allScored = entriesWithOdds.map((e) => {
-              const mlRate   = mlRateMap.get(e.horseName) ?? 11
-              const heuRate  = heuMap.get(e.horseName) ?? 25
-              const ensemble = ML_WEIGHT * mlRate + HEU_WEIGHT * heuRate
-              const base     = heuristicScored.find(s => s.horseName === e.horseName)
-              return base ? { ...base, placeRate: Math.round(ensemble * 10) / 10, _mlRate: Math.round(mlRate * 10) / 10, _heuristicRate: Math.round(heuRate * 10) / 10 } : null
-            }).filter(Boolean) as typeof heuristicScored
-            scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, {
-              calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis',
-            })
-            // placeRate と ML デバッグフィールドをアンサンブル値で上書き
-            for (const s of scored) {
-              const ensembled = allScored.find(a => a.horseName === s.horseName)
-              if (ensembled) {
-                s.placeRate       = ensembled.placeRate
-                s._mlRate         = ensembled._mlRate
-                s._heuristicRate  = ensembled._heuristicRate
-              }
-            }
+            mlRateMap = new Map(entriesWithOdds.map((e, idx) => [e.horseName, (mlProbs[idx] ?? 0.11) * 100]))
           }
         } catch (mlErr) {
           console.warn('[predict] ML推論失敗、ヒューリスティックのみで継続:', (mlErr as Error).message)
-          scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis' })
         }
-      } else {
-        scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, { calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis' })
       }
+      const ML_WEIGHT = Math.max(0, Math.min(1, parseFloat(process.env.ML_BLEND_RATIO ?? '0.8')))
+      const scored = localScoreHorses(entriesWithOdds, raceWithCond, stats, weights, {
+        calibration, globalIntervalBaseline: intervalBaseline, selectionMode: 'multiaxis',
+        mlBlend: mlRateMap ? { mlRateMap, mlWeight: ML_WEIGHT } : undefined,
+      })
 
       predictions = scored
       const coveredCount = stats.length
