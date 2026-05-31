@@ -136,6 +136,19 @@ model HorseStat {
   courseDistData Json     @default("{}")  // {"東京-芝-2400": {"races": 3, "places": 2}} 会場×馬場×距離複合
   avgHorseWeight     Float?            // §G 馬体重平均（全出走時の平均）
   weightSamples      Int      @default(0)  // §G 体重サンプル数
+  // --- オッズ非依存の実力系特徴量（point-in-time, reanalyze.js が算出） ---
+  bestSpeed          Float?            // 過去走スピード指数(z)の最良値（速い=高い）
+  avgSpeed3          Float?            // 直近3走スピード指数の平均
+  lastSpeed          Float?            // 直近走スピード指数
+  avgPosRatio        Float?            // 1角通過位置/頭数の平均（0=前, 1=後）
+  frontRate          Float?            // 先行率（pos_ratio<=0.3 の割合）
+  bestR3f            Float?            // 過去走上がり3F最速（秒, 小=良）
+  avgR3f3            Float?            // 直近3走上がり3F平均（秒）
+  avgRecentPop       Float?            // 直近5走の人気平均（市場評価の代理, 小=人気）
+  bestRecentPop      Int?              // 直近5走の最高人気（最小値）
+  sireDistRate       Float?            // 父産駒の同距離帯連対率（point-in-time）
+  sireSurfRate       Float?            // 父産駒の同馬場連対率
+  bmsDistRate        Float?            // 母父産駒の同距離帯連対率
   recentForm         String?           // "1-2-1-3-2"
   recentGrades       String?           // "G1-G2-G3-G1-G2" (recentFormと対応するグレード列)
   recentPops         String?           // "1-3-8-2-5" (recentFormと対応する人気順位)

@@ -2,8 +2,26 @@
  * LightGBM 特徴量ビルダー
  * EntryInput + HorseStat → MLFeatureVector に変換
  */
+import fs from 'fs'
+import path from 'path'
 import type { HorseStat } from '@prisma/client'
 import type { MLFeatureVector } from './mlInference'
+
+// 血統適性テーブル（scripts/build_pedigree_aptitude.js が出力）。無ければ null。
+type AptTable = {
+  sireDist?: Record<string, Record<string, number>>
+  sireSurf?: Record<string, Record<string, number>>
+  bmsDist?: Record<string, Record<string, number>>
+}
+let _apt: AptTable | null | undefined
+function getAptitude(): AptTable | null {
+  if (_apt !== undefined) return _apt
+  try {
+    const p = path.join(process.cwd(), 'ml', 'pedigree_aptitude.json')
+    _apt = fs.existsSync(p) ? (JSON.parse(fs.readFileSync(p, 'utf8')) as AptTable) : null
+  } catch { _apt = null }
+  return _apt
+}
 
 const JOCKEY_RANKS: Record<string, number> = {
   'C.ルメール': 14, 'ルメール': 14,
@@ -52,16 +70,14 @@ function parseForm(s: string | null | undefined, n = 5): number[] {
   return result
 }
 
+// 過去走が無い場合のフォールバック（build_dataset.py / reanalyze.js と一致）
+const DEF_SPEED = 0.0, DEF_POSRATIO = 0.5, DEF_FRONT = 0.0, DEF_R3F = 35.0, DEF_POP = 9
+
 export function buildMLFeatures(
   entry: {
     horseName: string
     jockey?: string | null
     trainer?: string | null
-    horseWeight?: number | null
-    weightChange?: number | null
-    oddsFloat?: number | null
-    oddsPopularity?: number | null
-    lastThreeFurlong?: number | null
     age?: number | null
   },
   race: {
@@ -72,7 +88,6 @@ export function buildMLFeatures(
     date?: Date
   },
   stat: HorseStat | null,
-  oddsRankInRace: number,
 ): MLFeatureVector {
   const now = race.date ?? new Date()
   const month = now.getMonth() + 1
@@ -89,9 +104,17 @@ export function buildMLFeatures(
   const lastRaceDate = stat?.lastRaceDate ? new Date(stat.lastRaceDate) : null
   const daysSinceLast = lastRaceDate ? Math.min(Math.floor((now.getTime() - lastRaceDate.getTime()) / 86400000), 365) : 180
 
-  const hw = entry.horseWeight ?? stat?.avgHorseWeight ?? 490
-  const avgHw = stat?.avgHorseWeight ?? hw
+  // 血統適性（父産駒・母父産駒の距離帯/馬場連対率）。未取得・少数は自馬の place_rate を既定値に。
+  const apt = getAptitude()
+  const dbin = String(distanceBin(race.distance))
+  const sire = stat?.sire ?? ''
+  const bms = stat?.sireOfDam ?? ''
+  const sireDistRate = apt?.sireDist?.[sire]?.[dbin] ?? placeRate
+  const sireSurfRate = apt?.sireSurf?.[sire]?.[race.surface] ?? placeRate
+  const bmsDistRate  = apt?.bmsDist?.[bms]?.[dbin] ?? placeRate
 
+  // 当日情報(odds/popularity/horse_weight/weight_change/当日上がり3F)は数日前予想では
+  // 欠損するため特徴量に使わない。馬体重は過去平均、人気・上がり3F・スピードは過去走集計を使用。
   return {
     grade_rank: GRADE_RANK[race.grade] ?? 1,
     surface_bin: race.surface === '芝' ? 1 : 0,
@@ -117,20 +140,26 @@ export function buildMLFeatures(
     form_avg: formAvg,
     form_recent3_avg: formRecent3Avg,
     days_since_last: daysSinceLast,
-    last_race_pop: stat?.lastRacePopularity ?? 9,
+    last_race_pop: stat?.lastRacePopularity ?? DEF_POP,
 
     jockey_rank:  JOCKEY_RANKS[entry.jockey ?? '']  ?? 3,
     trainer_rank: TRAINER_RANKS[entry.trainer ?? ''] ?? 3,
+    horse_weight: stat?.avgHorseWeight ?? 490,
 
-    horse_weight: hw,
-    weight_change: entry.weightChange ?? 0,
-    weight_vs_avg: hw - avgHw,
+    // オッズ非依存の実力系（reanalyze.js が HorseStat に格納済み）
+    best_speed:      stat?.bestSpeed     ?? DEF_SPEED,
+    avg_speed3:      stat?.avgSpeed3     ?? DEF_SPEED,
+    last_speed:      stat?.lastSpeed     ?? DEF_SPEED,
+    avg_pos_ratio:   stat?.avgPosRatio   ?? DEF_POSRATIO,
+    front_rate:      stat?.frontRate     ?? DEF_FRONT,
+    best_r3f:        stat?.bestR3f        ?? DEF_R3F,
+    avg_r3f3:        stat?.avgR3f3        ?? DEF_R3F,
+    avg_recent_pop:  stat?.avgRecentPop  ?? DEF_POP,
+    best_recent_pop: stat?.bestRecentPop ?? DEF_POP,
 
-    popularity: entry.oddsPopularity ?? 9,
-    odds: entry.oddsFloat ?? 15.0,
-    odds_log: Math.log1p(entry.oddsFloat ?? 15.0),
-    odds_rank: oddsRankInRace,
-
-    rapid_increase: entry.lastThreeFurlong ?? 35.0,
+    // 血統適性（USE_PEDIGREE で訓練したモデルのみ使用。38特徴量モデルでは無視される）
+    sire_dist_rate: sireDistRate,
+    sire_surf_rate: sireSurfRate,
+    bms_dist_rate:  bmsDistRate,
   }
 }

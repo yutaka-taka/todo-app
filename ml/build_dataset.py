@@ -1,24 +1,29 @@
 """
-RaceResult から LightGBM 訓練データセット (Parquet) を生成。【point-in-time / リーク除去版】
+RaceResult から LightGBM 訓練データセット (Parquet) を生成。
+【point-in-time / リーク除去 + オッズ非依存(数日前予想)版】
 
-旧版は各レース結果に「その馬の現在の全期間集計 HorseStat」を結合していたため、
-対象レース自体＋未来レースの成績が特徴量に混入していた（AUC 0.99 の正体）。
-本版は各 (馬, レース) の特徴量を、その馬の対象レース日より前の deduped レースのみから
-時系列に算出する。サービス側 src/lib/mlFeatures.ts と同一の特徴量定義・既定値を用いる
-ことで train/serve parity を保証する。
+設計原則: **すべての特徴量は「予想時点(数日前・オッズ/馬体重/上がり3F 未確定)」で
+計算可能でなければならない**。当日情報(odds/popularity/horse_weight/weight_change/
+当日上がり3F)は serve 時に欠損し train/serve skew を生むため特徴量から除外し、
+過去走から算出する実力系の代理指標(スピード指数・脚質・過去上がり3F・過去人気)に
+置き換える。各 (馬,レース) の特徴量は対象レース日より前の deduped レースのみから算出。
+
+サービス側 src/lib/mlFeatures.ts / scripts/reanalyze.js と同一定義・既定値で parity を保証。
+スピード指数の正規化は reanalyze.js が出力する ml/speed_norms.json を共用する。
 
   python ml/build_dataset.py --from=2021-01-01 --to=2026-12-31 --out=ml/dataset.parquet
 """
 import argparse
-import math
+import json
 import os
+import re
 import psycopg2
 import pandas as pd
-import numpy as np
 
 DB_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:post@localhost:5432/keiba')
+NORMS_PATH = os.path.join(os.path.dirname(__file__), 'speed_norms.json')
 
-# === src/lib/mlFeatures.ts と完全一致させること（train/serve parity） ===
+# === src/lib/mlFeatures.ts / reanalyze.js と完全一致させること（train/serve parity） ===
 JOCKEY_RANKS = {
     'C.ルメール': 14, 'ルメール': 14,
     '武豊': 10, '川田将雅': 10, '横山武史': 10,
@@ -40,6 +45,8 @@ VENUE_WIN_RATE = {
 }
 GRADE_RANK = {'G1': 4, 'G2': 3, 'G3': 2, '通常': 1}
 DEDUP_DAYS = 4
+# 過去走が無い場合のフォールバック（reanalyze.js と一致）
+DEF_SPEED, DEF_POSRATIO, DEF_FRONT, DEF_R3F, DEF_POP = 0.0, 0.5, 0.0, 35.0, 9
 
 FEATURE_COLS = [
     'grade_rank', 'surface_bin', 'distance', 'distance_bin', 'month', 'day_of_year',
@@ -47,10 +54,9 @@ FEATURE_COLS = [
     'dist_rate', 'venue_rate', 'surface_rate', 'course_dist_rate',
     'form0', 'form1', 'form2', 'form3', 'form4', 'form_avg', 'form_recent3_avg',
     'days_since_last', 'last_race_pop',
-    'jockey_rank', 'trainer_rank',
-    'horse_weight', 'weight_change', 'weight_vs_avg',
-    'popularity', 'odds', 'odds_log', 'odds_rank',
-    'rapid_increase',
+    'jockey_rank', 'trainer_rank', 'horse_weight',
+    'best_speed', 'avg_speed3', 'last_speed', 'avg_pos_ratio', 'front_rate',
+    'best_r3f', 'avg_r3f3', 'avg_recent_pop', 'best_recent_pop',
 ]
 
 
@@ -61,12 +67,43 @@ def distance_bin(d):
     return 3
 
 
+def parse_time_sec(t):
+    if not t:
+        return None
+    m = re.match(r'^(?:(\d+):)?(\d+(?:\.\d+)?)$', str(t))
+    if not m:
+        return None
+    total = (int(m.group(1)) if m.group(1) else 0) * 60 + float(m.group(2))
+    return total if 0 < total < 1200 else None
+
+
+def first_corner(cp):
+    if not cp:
+        return None
+    head = str(cp).split('-')[0]
+    try:
+        n = int(head)
+        return n if n > 0 else None
+    except ValueError:
+        return None
+
+
+def speed_z(norms, venue, surface, distance, sec):
+    if sec is None:
+        return None
+    g = norms.get(f'{venue}-{surface}-{distance}')
+    if not g or g['n'] < 20:
+        return None
+    z = (g['mean'] - sec) / max(g['std'], 0.1)
+    return max(-5.0, min(5.0, z))
+
+
 def fetch(conn, start, end):
     sql = """
     SELECT r.id AS race_id, r.name, r.date, r.venue, r.grade, r.surface, r.distance,
            rr."finishPosition" AS pos, rr."horseName" AS horse,
-           rr.jockey, rr.trainer, rr.popularity, rr.odds,
-           rr."horseWeight" AS hw, rr."weightChange" AS wc, rr."rapidIncrease" AS r3f
+           rr.jockey, rr.trainer, rr.popularity, rr."horseWeight" AS hw,
+           rr.time AS time, rr."cornerPositions" AS corner, rr."rapidIncrease" AS r3f
     FROM "RaceResult" rr JOIN "Race" r ON r.id = rr."raceId"
     WHERE r.date BETWEEN %s AND %s AND rr."finishPosition" IS NOT NULL
     ORDER BY rr."horseName", r.date
@@ -75,6 +112,12 @@ def fetch(conn, start, end):
     cur.execute(sql, (start, end))
     cols = [c[0] for c in cur.description]
     return pd.DataFrame(cur.fetchall(), columns=cols)
+
+
+def fetch_ped_map(conn):
+    cur = conn.cursor()
+    cur.execute('SELECT "horseName", sire, "sireOfDam" FROM "HorseStat" WHERE sire IS NOT NULL')
+    return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
 
 
 def json_rate(d, key):
@@ -95,35 +138,80 @@ def main():
     ap.add_argument('--out', default='ml/dataset.parquet')
     args = ap.parse_args()
 
+    if not os.path.exists(NORMS_PATH):
+        raise SystemExit(f'speed_norms.json が見つかりません: {NORMS_PATH}\n先に `node scripts/reanalyze.js` を実行してください。')
+    with open(NORMS_PATH, encoding='utf-8') as f:
+        norms = json.load(f)
+    print(f'speed_norms: {len(norms)} 群')
+
     print(f'DB接続 / データ取得: {args.start} → {args.end}')
     conn = psycopg2.connect(DB_URL)
     df = fetch(conn, args.start, args.end)
+    ped_map = fetch_ped_map(conn)
     conn.close()
-    print(f'取得行数: {len(df)}')
-
-    # odds_rank はレース(コピー)内で計算（各コピーはフィールド完備のため一貫）
-    df['_odds_for_rank'] = df['odds'].fillna(15.0)
-    df['odds_rank'] = df.groupby('race_id')['_odds_for_rank'].rank(method='min')
+    print(f'取得行数: {len(df)} / 血統保有馬: {len(ped_map)}')
 
     df['date'] = pd.to_datetime(df['date'])
-    # NaN(欠損)を None に正規化（pandas 経由で DB null が NaN になり "is not None" 判定を
-    # すり抜けるのを防ぐ。サービス側の既定値ロジックと一致させるため必須）。
-    for col in ['pos', 'popularity', 'odds', 'hw', 'wc', 'r3f']:
+    # フィールドサイズ（コピー内の出走頭数）= posRatio 用
+    df['_fieldsize'] = df.groupby('race_id')['race_id'].transform('count')
+    # 当該行のスピード指数 / 1角通過位置比率を事前計算（reanalyze.js と同一式）
+    df['_sec'] = df['time'].map(parse_time_sec)
+    df['_speedz'] = [speed_z(norms, v, s, d, sec) for v, s, d, sec in
+                     zip(df['venue'], df['surface'], df['distance'], df['_sec'])]
+    df['_fc'] = df['corner'].map(first_corner)
+    df['_posratio'] = [
+        max(0.0, min(1.0, fc / fs)) if (fc is not None and fs and fs > 0) else None
+        for fc, fs in zip(df['_fc'], df['_fieldsize'])
+    ]
+
+    # NaN(欠損)を None に正規化（pandas 経由で DB null が NaN になり判定をすり抜けるのを防ぐ）
+    for col in ['pos', 'popularity', 'hw', 'r3f', '_speedz', '_posratio']:
         df[col] = df[col].astype('object').where(df[col].notna(), None)
     recs = df.to_dict('records')
 
+    # --- 血統適性 as-of-date（リーク防止: 各レースは「その時点まで」の産駒成績のみから算出） ---
+    from collections import defaultdict
+    for r in recs:
+        sb = ped_map.get(r['horse'])
+        r['_sire'] = sb[0] if sb else None
+        r['_bms'] = sb[1] if sb else None
+        r['_dbin'] = distance_bin(r['distance'])
+    rid_rows = defaultdict(list)
+    for i, r in enumerate(recs):
+        rid_rows[r['race_id']].append(i)
+    rid_order = sorted(rid_rows.keys(), key=lambda rid: recs[rid_rows[rid][0]]['date'])
+    sd_, ss_, bd_ = {}, {}, {}
+
+    def _arate(store, key):
+        e = store.get(key)
+        return (e[1] / e[0]) if (e and e[0] >= 10) else None
+
+    for rid in rid_order:
+        rows = rid_rows[rid]
+        for i in rows:  # 先に当該レース「前まで」の集計でレートを確定（レース内リーク防止）
+            r = recs[i]
+            r['_sdr'] = _arate(sd_, (r['_sire'], r['_dbin'])) if r['_sire'] else None
+            r['_ssr'] = _arate(ss_, (r['_sire'], r['surface'])) if r['_sire'] else None
+            r['_bdr'] = _arate(bd_, (r['_bms'], r['_dbin'])) if r['_bms'] else None
+        for i in rows:  # 次にこのレース結果を集計へ加算
+            r = recs[i]
+            placed = 1 if (r['pos'] or 99) <= 2 else 0
+            if r['_sire']:
+                for key, store in (((r['_sire'], r['_dbin']), sd_), ((r['_sire'], r['surface']), ss_)):
+                    e = store.setdefault(key, [0, 0]); e[0] += 1; e[1] += placed
+            if r['_bms']:
+                e = bd_.setdefault((r['_bms'], r['_dbin']), [0, 0]); e[0] += 1; e[1] += placed
+
     out_rows = []
     cur_horse = None
-    # 馬ごとの prior 集計（point-in-time）
+
     def reset():
         return dict(n=0, places=0, g1n=0, g1p=0, g2n=0, g2p=0, g3n=0, g3p=0,
                     dist={}, venue={}, surf={}, cd={}, wsum=0.0, wcnt=0,
-                    finishes=[], last_date=None, last_pop=None, prev_r3f=None,
-                    pending=None)  # pending = 直前 emit 待ち行（dedup 用）
+                    finishes=[], prs=[], last_date=None, last_pop=None, pending=None)
     acc = reset()
 
     def add_prior(acc, race):
-        """deduped 1 レースを prior 集計へ加算（emit 後に呼ぶ）"""
         placed = (race['pos'] or 99) <= 2
         acc['n'] += 1
         if placed: acc['places'] += 1
@@ -142,27 +230,49 @@ def main():
         if race['hw'] is not None and race['hw'] > 0:
             acc['wsum'] += race['hw']; acc['wcnt'] += 1
         acc['finishes'].append(race['pos'] or 99)
+        # 実力系の prior レコード（時系列順）
+        acc['prs'].append(dict(speedz=race['_speedz'], posratio=race['_posratio'],
+                               r3f=race['r3f'], pop=race['popularity']))
         acc['last_date'] = race['date']
         acc['last_pop'] = race['popularity']
-        acc['prev_r3f'] = race['r3f']
 
     def merge_pending(a, b):
-        """同一レース重複（4日以内）を統合し、情報量の多い行を採用"""
         keep = b if dup_score(b) > dup_score(a) else a
         other = a if keep is b else b
         keep = dict(keep)
         if (keep['pos'] or 99) >= 99 and (other['pos'] or 99) < 99:
             keep['pos'] = other['pos']
-        for k in ('popularity', 'hw', 'wc', 'r3f', 'odds'):
+        for k in ('popularity', 'hw', 'r3f', '_speedz', '_posratio', '_sdr', '_ssr', '_bdr'):
             if keep[k] is None: keep[k] = other[k]
         if (GRADE_RANK.get(other['grade'], 1)) > (GRADE_RANK.get(keep['grade'], 1)):
             keep['grade'] = other['grade']
         return keep
 
+    def agg_speed_style_pop(prs):
+        """reanalyze.js と同一ロジックで prior レコード列から実力系を集計"""
+        speeds = [p['speedz'] for p in prs if p['speedz'] is not None]
+        posr = [p['posratio'] for p in prs if p['posratio'] is not None]
+        r3fs = [p['r3f'] for p in prs if p['r3f'] is not None]
+        last3 = prs[-3:]
+        l3speed = [p['speedz'] for p in last3 if p['speedz'] is not None]
+        l3r3f = [p['r3f'] for p in last3 if p['r3f'] is not None]
+        last5 = prs[-5:]
+        l5pop = [DEF_POP if p['pop'] is None else p['pop'] for p in last5]
+        return {
+            'best_speed': max(speeds) if speeds else DEF_SPEED,
+            'avg_speed3': (sum(l3speed) / len(l3speed)) if l3speed else DEF_SPEED,
+            'last_speed': speeds[-1] if speeds else DEF_SPEED,
+            'avg_pos_ratio': (sum(posr) / len(posr)) if posr else DEF_POSRATIO,
+            'front_rate': (sum(1 for r in posr if r <= 0.3) / len(posr)) if posr else DEF_FRONT,
+            'best_r3f': min(r3fs) if r3fs else DEF_R3F,
+            'avg_r3f3': (sum(l3r3f) / len(l3r3f)) if l3r3f else DEF_R3F,
+            'avg_recent_pop': (sum(l5pop) / len(l5pop)) if l5pop else DEF_POP,
+            'best_recent_pop': min(l5pop) if l5pop else DEF_POP,
+        }
+
     def emit(acc, race):
         n = acc['n']
         place_rate = (acc['places'] / n) if n > 0 else 0.111
-        # form: prior finishes newest-first, pad 0 to 5（mlFeatures.ts parseForm 準拠）
         fr = list(reversed(acc['finishes']))[:5]
         form = [fr[i] if i < len(fr) else 0 for i in range(5)]
         form_avg = sum(form) / 5.0
@@ -172,10 +282,9 @@ def main():
             days_since = min(max(days, 0), 365)
         else:
             days_since = 180
-        avg_hw = (acc['wsum'] / acc['wcnt']) if acc['wcnt'] > 0 else None
-        hw = race['hw'] if race['hw'] is not None else (avg_hw if avg_hw is not None else 490)
-        avg_hw2 = avg_hw if avg_hw is not None else hw
+        avg_hw = (acc['wsum'] / acc['wcnt']) if acc['wcnt'] > 0 else 490.0
         d = race['distance']
+        ss = agg_speed_style_pop(acc['prs'])
         feat = {
             'grade_rank': GRADE_RANK.get(race['grade'], 1),
             'surface_bin': 1 if race['surface'] == '芝' else 0,
@@ -198,14 +307,11 @@ def main():
             'last_race_pop': acc['last_pop'] if acc['last_pop'] is not None else 9,
             'jockey_rank': JOCKEY_RANKS.get(race['jockey'], 3) if race['jockey'] else 3,
             'trainer_rank': TRAINER_RANKS.get(race['trainer'], 3) if race['trainer'] else 3,
-            'horse_weight': hw,
-            'weight_change': race['wc'] if race['wc'] is not None else 0,
-            'weight_vs_avg': hw - avg_hw2,
-            'popularity': race['popularity'] if race['popularity'] is not None else 9,
-            'odds': race['odds'] if race['odds'] is not None else 15.0,
-            'odds_log': math.log1p(race['odds'] if race['odds'] is not None else 15.0),
-            'odds_rank': race['odds_rank'],
-            'rapid_increase': acc['prev_r3f'] if acc['prev_r3f'] is not None else 35.0,
+            'horse_weight': avg_hw,
+            **ss,
+            'sire_dist_rate': race['_sdr'] if race.get('_sdr') is not None else place_rate,
+            'sire_surf_rate': race['_ssr'] if race.get('_ssr') is not None else place_rate,
+            'bms_dist_rate':  race['_bdr'] if race.get('_bdr') is not None else place_rate,
             'y': 1 if (race['pos'] or 99) <= 2 else 0,
             'race_id': race['race_id'],
             'date': race['date'],
@@ -214,7 +320,6 @@ def main():
         out_rows.append(feat)
 
     def flush(acc):
-        """pending 行を emit → prior へ加算"""
         if acc['pending'] is not None:
             emit(acc, acc['pending'])
             add_prior(acc, acc['pending'])
@@ -228,9 +333,9 @@ def main():
             cur_horse = h
         p = acc['pending']
         if p is not None and (race['date'] - p['date']).days <= DEDUP_DAYS:
-            acc['pending'] = merge_pending(p, race)  # 同一レース重複 → 統合（emit せず保留）
+            acc['pending'] = merge_pending(p, race)
         else:
-            flush(acc)            # 前の確定レースを emit + prior 反映
+            flush(acc)
             acc['pending'] = dict(race)
     flush(acc)
 

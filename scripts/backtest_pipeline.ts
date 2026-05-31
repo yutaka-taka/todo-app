@@ -138,9 +138,7 @@ async function main() {
         // ML確率（比率非依存。1回だけ）
         let mlRateMap: Map<string, number> | null = null
         if (isMLModelAvailable()) {
-          const sortedByOdds = [...entries].sort((a, b) => (a.oddsFloat ?? 999) - (b.oddsFloat ?? 999))
-          const oddsRankMap = new Map(sortedByOdds.map((e, i) => [e.horseName, i + 1]))
-          const inputs = entries.map(e => buildMLFeatures({ ...e }, raceCtx, statMap.get(e.horseName) ?? null, oddsRankMap.get(e.horseName) ?? 9))
+          const inputs = entries.map(e => buildMLFeatures({ ...e }, raceCtx, statMap.get(e.horseName) ?? null))
           const probs = await predictML(inputs)
           if (probs) mlRateMap = new Map(entries.map((e, i) => [e.horseName, (probs[i] ?? 0.11) * 100]))
         }

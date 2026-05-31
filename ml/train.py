@@ -12,17 +12,23 @@ import pandas as pd
 import lightgbm as lgb
 from sklearn.metrics import roc_auc_score, log_loss
 
+# オッズ非依存・数日前予想で計算可能な特徴量のみ（build_dataset.py / mlFeatures.ts と一致）
 FEATURE_COLS = [
     'grade_rank', 'surface_bin', 'distance', 'distance_bin', 'month', 'day_of_year',
     'total_races', 'total_places', 'place_rate', 'g1_races', 'g1_places', 'g2_places', 'g3_places',
     'dist_rate', 'venue_rate', 'surface_rate', 'course_dist_rate',
     'form0', 'form1', 'form2', 'form3', 'form4', 'form_avg', 'form_recent3_avg',
     'days_since_last', 'last_race_pop',
-    'jockey_rank', 'trainer_rank',
-    'horse_weight', 'weight_change', 'weight_vs_avg',
-    'popularity', 'odds', 'odds_log', 'odds_rank',
-    'rapid_increase',
+    'jockey_rank', 'trainer_rank', 'horse_weight',
+    'best_speed', 'avg_speed3', 'last_speed', 'avg_pos_ratio', 'front_rate',
+    'best_r3f', 'avg_r3f3', 'avg_recent_pop', 'best_recent_pop',
 ]
+
+# 血統適性。血統スクレイピングが十分に進んだら USE_PEDIGREE=1 で有効化する。
+# （未取得が多い段階では定数化してノイズになるため既定では使わない）
+PEDIGREE_COLS = ['sire_dist_rate', 'sire_surf_rate', 'bms_dist_rate']
+if os.environ.get('USE_PEDIGREE'):
+    FEATURE_COLS = FEATURE_COLS + PEDIGREE_COLS
 
 
 def time_split(df, valid_ratio=0.15, test_ratio=0.20):

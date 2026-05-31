@@ -95,13 +95,13 @@ export async function POST(request: NextRequest) {
       if (mlAvailable) {
         try {
           const statMap = new Map(stats.map(s => [s.horseName, s]))
-          const sortedByOdds = [...entriesWithOdds].sort((a, b) => (a.oddsFloat ?? 999) - (b.oddsFloat ?? 999))
-          const oddsRankMap = new Map(sortedByOdds.map((e, i) => [e.horseName, i + 1]))
+          // 数日前予想（オッズ未確定）でも計算可能な実力系特徴量のみで推論。
+          // 当日オッズに依存しない（旧実装は odds_rank が欠損時に馬番順へ退化し、
+          // 馬番1番を1番人気と誤認して予想が馬番順に並ぶ重大バグがあった）。
           const mlInputs = entriesWithOdds.map(e => buildMLFeatures(
-            { ...e, jockey: e.jockey ?? null, trainer: e.trainer ?? null },
+            { horseName: e.horseName, jockey: e.jockey ?? null, trainer: e.trainer ?? null, age: e.age ?? null },
             raceWithCond,
             statMap.get(e.horseName) ?? null,
-            oddsRankMap.get(e.horseName) ?? 9,
           ))
           const mlProbs = await predictML(mlInputs)
           if (mlProbs) {

@@ -50,13 +50,20 @@ export interface MLFeatureVector {
   jockey_rank: number
   trainer_rank: number
   horse_weight: number
-  weight_change: number
-  weight_vs_avg: number
-  popularity: number
-  odds: number
-  odds_log: number
-  odds_rank: number
-  rapid_increase: number
+  // オッズ非依存の実力系特徴量（過去走から算出, 数日前でも計算可）
+  best_speed: number
+  avg_speed3: number
+  last_speed: number
+  avg_pos_ratio: number
+  front_rate: number
+  best_r3f: number
+  avg_r3f3: number
+  avg_recent_pop: number
+  best_recent_pop: number
+  // 血統適性（USE_PEDIGREE 訓練時のみモデルが使用）
+  sire_dist_rate: number
+  sire_surf_rate: number
+  bms_dist_rate: number
   [key: string]: number
 }
 
