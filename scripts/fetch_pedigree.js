@@ -2,12 +2,14 @@
 /**
  * netkeiba から血統（父・母・父父・父母・母父・母母）を取得し HorseStat に保存する。
  *
- *   node scripts/fetch_pedigree.js [--limit=N] [--delay=350] [--refetch]
+ *   node scripts/fetch_pedigree.js [--limit=N] [--delay=350] [--refetch] [--race=<raceId>]
  *
  * - 馬名検索 → 馬個体ID解決 → 血統ページ(/horse/ped/{id}/)をパース。
  * - チェックポイント方式: sire が既に入っている馬はスキップ（--refetch で再取得）。
- * - 優先順位: ①未来レース出走馬 ②重賞出走馬 ③最近のレース ④その他。
+ * - 既定の優先順位: ①未来レース出走馬 ②重賞出走馬 ③最近のレース ④その他。
  *   途中で止まっても「いま予想したい馬」から埋まる。
+ * - --race=<raceId>: その1レースの出走馬だけを狙い撃ち取得（過去レース・結果未取込みでも
+ *   raceEntry から拾える）。特定レースの予想を血統込みで即検証したいとき用。
  * - 礼儀正しいレート制限（既定 350ms）。失敗は数回リトライ後スキップ。
  */
 const { PrismaClient } = require('@prisma/client')
@@ -80,6 +82,24 @@ function parsePed(html) {
   }
 }
 
+// 単一レースの出走馬名（refetch でなければ sire 取得済みは除外）
+async function getRaceHorses(raceId, refetch) {
+  const entries = await prisma.raceEntry.findMany({
+    where: { raceId }, select: { horseName: true }, orderBy: { horseNumber: 'asc' },
+  })
+  const names = []
+  const seen = new Set()
+  for (const e of entries) {
+    const n = e.horseName?.trim()
+    if (n && !seen.has(n)) { seen.add(n); names.push(n) }
+  }
+  if (refetch) return names
+  const have = new Set(
+    (await prisma.horseStat.findMany({ where: { horseName: { in: names }, sire: { not: null } }, select: { horseName: true } })).map(h => h.horseName)
+  )
+  return names.filter(n => !have.has(n))
+}
+
 // 優先順位付きで血統未取得の馬名リストを取得
 async function getPrioritizedHorses(refetch) {
   const now = new Date()
@@ -122,9 +142,14 @@ async function main() {
   const refetch = !!args.refetch
 
   console.log('=== 血統取得開始 ===')
-  const horses = await getPrioritizedHorses(refetch)
+  const raceId = typeof args.race === 'string' ? args.race : null
+  const horses = raceId
+    ? await getRaceHorses(raceId, refetch)
+    : await getPrioritizedHorses(refetch)
   const target = horses.slice(0, limit)
-  console.log(`対象: ${target.length} 頭 (全未取得 ${horses.length} / delay=${delay}ms)`)
+  console.log(raceId
+    ? `対象: レース ${raceId} の未取得 ${target.length} 頭 (delay=${delay}ms)`
+    : `対象: ${target.length} 頭 (全未取得 ${horses.length} / delay=${delay}ms)`)
 
   let ok = 0, miss = 0, done = 0
   for (const name of target) {
