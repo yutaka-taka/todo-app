@@ -32,8 +32,13 @@ function nearestSaturday(today: Date): Date {
 }
 
 // SP 版スケジュールページから race_id を取得
-// 返値: { raceId, dayNum } (dayNum = 12桁IDの9-10文字目)
-async function fetchWeekendRaceIds(saturdayStr: string): Promise<Array<{ raceId: string; venueCode: string; dayNum: number; raceNum: number }>> {
+// 返値: { raceId, venueCode, kaisaiNum, dayNum, raceNum, kaisaiDate(YYYYMMDD) }
+// 注: ページには複数の RaceListDayWrap ブロックがあり、来週のG1プレビューも含む。
+//     各ブロックの data-kaisaidate を見て、当該週末（土日）のみ抽出する。
+async function fetchWeekendRaceIds(
+  saturdayStr: string,
+  sundayStr: string,
+): Promise<Array<{ raceId: string; venueCode: string; kaisaiNum: number; dayNum: number; raceNum: number; kaisaiDate: string }>> {
   try {
     const res = await fetch(
       `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${saturdayStr}`,
@@ -43,26 +48,62 @@ async function fetchWeekendRaceIds(saturdayStr: string): Promise<Array<{ raceId:
     const html = await res.text()
 
     const seen = new Set<string>()
-    const results: Array<{ raceId: string; venueCode: string; dayNum: number; raceNum: number }> = []
+    const results: Array<{ raceId: string; venueCode: string; kaisaiNum: number; dayNum: number; raceNum: number; kaisaiDate: string }> = []
 
-    // race_id=YYYYKKMMDDRR (12桁)
-    const pattern = /race_id=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/g
-    let m
-    while ((m = pattern.exec(html)) !== null) {
-      const raceId = m[1] + m[2] + m[3] + m[4] + m[5]
-      if (seen.has(raceId)) continue
-      seen.add(raceId)
-      results.push({
-        raceId,
-        venueCode: m[2],   // KK
-        dayNum: parseInt(m[4]),   // DD (day within meeting)
-        raceNum: parseInt(m[5]),  // RR
-      })
+    for (const block of splitDayWrapBlocks(html)) {
+      // ブロック内の data-kaisaidate="YYYYMMDD" を取得（先頭の jyo_tab li から）
+      const dateMatch = block.match(/data-kaisaidate="(\d{8})"/)
+      const kaisaiDate = dateMatch?.[1]
+      if (!kaisaiDate || (kaisaiDate !== saturdayStr && kaisaiDate !== sundayStr)) continue
+
+      const pattern = /race_id=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/g
+      let m
+      while ((m = pattern.exec(block)) !== null) {
+        const raceId = m[1] + m[2] + m[3] + m[4] + m[5]
+        if (seen.has(raceId)) continue
+        seen.add(raceId)
+        results.push({
+          raceId,
+          venueCode: m[2],
+          kaisaiNum: parseInt(m[3]),
+          dayNum: parseInt(m[4]),
+          raceNum: parseInt(m[5]),
+          kaisaiDate,
+        })
+      }
     }
     return results
   } catch {
     return []
   }
+}
+
+// RaceListDayWrap ブロックを div ネストカウントで安全に切り出す
+function splitDayWrapBlocks(html: string): string[] {
+  const blocks: string[] = []
+  const openRegex = /<div class="RaceListDayWrap"[^>]*>/g
+  let m
+  while ((m = openRegex.exec(html)) !== null) {
+    const start = m.index
+    const openLen = m[0].length
+    let depth = 1
+    let j = start + openLen
+    while (j < html.length && depth > 0) {
+      const nextOpen = html.indexOf('<div', j)
+      const nextClose = html.indexOf('</div>', j)
+      if (nextClose < 0) { j = html.length; break }
+      if (nextOpen >= 0 && nextOpen < nextClose) {
+        depth++
+        j = nextOpen + 4
+      } else {
+        depth--
+        j = nextClose + 6
+      }
+    }
+    blocks.push(html.slice(start, j))
+    openRegex.lastIndex = j
+  }
+  return blocks
 }
 
 // netkeiba shutuba ページから出走馬を取得（EUC-JP デコード対応）
@@ -145,40 +186,25 @@ async function scrapeEntries(raceId: string): Promise<Array<{
 }
 
 // 週末スケジュールから DB レースに対応する race_id を返す
+// kaisaiDate で日付を直接マッチさせる（旧来の dayNum ヒューリスティック不要）
 function findRaceIdForDbRace(
-  allRaceIds: Array<{ raceId: string; venueCode: string; dayNum: number; raceNum: number }>,
+  allRaceIds: Array<{ raceId: string; venueCode: string; kaisaiNum: number; dayNum: number; raceNum: number; kaisaiDate: string }>,
   venue: string,
-  isSaturday: boolean,
+  raceDateStr: string, // YYYYMMDD
 ): string | null {
   const venueCode = VENUE_CODES[venue]
   if (!venueCode) return null
 
-  // R11 と R12 を対象（重賞は最終レース付近）
   const candidates = allRaceIds.filter(
-    (x) => x.venueCode === venueCode && (x.raceNum === 11 || x.raceNum === 12),
+    (x) => x.venueCode === venueCode && x.kaisaiDate === raceDateStr && (x.raceNum === 11 || x.raceNum === 12),
   )
   if (candidates.length === 0) return null
 
-  // dayNum でソート
-  candidates.sort((a, b) => a.dayNum - b.dayNum)
-  const minDay = candidates[0].dayNum
-
-  if (isSaturday) {
-    // 土曜 = 最小 dayNum の R11（なければ R12）
-    return (
-      candidates.find((x) => x.dayNum === minDay && x.raceNum === 11)?.raceId
-      ?? candidates.find((x) => x.dayNum === minDay)?.raceId
-      ?? null
-    )
-  } else {
-    // 日曜 = minDay + 1 の R11（今週末の日曜）
-    const sunDay = minDay + 1
-    return (
-      candidates.find((x) => x.dayNum === sunDay && x.raceNum === 11)?.raceId
-      ?? candidates.find((x) => x.dayNum === sunDay)?.raceId
-      ?? null
-    )
-  }
+  return (
+    candidates.find((x) => x.raceNum === 11)?.raceId
+    ?? candidates.find((x) => x.raceNum === 12)?.raceId
+    ?? null
+  )
 }
 
 export async function POST() {
@@ -233,7 +259,8 @@ export async function POST() {
 
     // SP スケジュールページから全 race_id を取得
     const saturdayStr = format(saturday, 'yyyyMMdd')
-    const allRaceIds = await fetchWeekendRaceIds(saturdayStr)
+    const sundayStr = format(addDays(saturday, 1), 'yyyyMMdd')
+    const allRaceIds = await fetchWeekendRaceIds(saturdayStr, sundayStr)
 
     if (allRaceIds.length === 0) {
       for (const race of racesNeedEntries) {
@@ -247,9 +274,9 @@ export async function POST() {
     } else {
       for (const race of racesNeedEntries) {
         const raceDate = new Date(race.date)
-        const isSaturday = raceDate.getDay() === 6
+        const raceDateStr = format(raceDate, 'yyyyMMdd')
 
-        const raceId = findRaceIdForDbRace(allRaceIds, race.venue, isSaturday)
+        const raceId = findRaceIdForDbRace(allRaceIds, race.venue, raceDateStr)
 
         if (!raceId) {
           raceResults.push({

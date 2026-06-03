@@ -24,9 +24,25 @@ function weekendRangeJst(now: Date): { start: Date; end: Date } {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const { start: dayStart, end: dayEnd } = weekendRangeJst(new Date())
+    // ?date=YYYY-MM-DD があればその JST カレンダー日の [00:00, 翌00:00) を窓にする。
+    // 無ければ従来どおり「今週末(土〜日)」を表示する。
+    // レース日時は DB 内で UTC午前0時(=JST 09:00) / JST午前0時(=UTC前日15:00) の
+    // 2 規約が混在するが、JST の 24h 窓ならどちらの規約でも当日のレースを捕捉できる。
+    const dateParam = request.nextUrl.searchParams.get('date')
+    let dayStart: Date
+    let dayEnd: Date
+    if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      const [y, m, d] = dateParam.split('-').map(Number)
+      const startUtc = Date.UTC(y, m - 1, d) - JST_OFFSET_MS // 指定日 00:00 JST
+      dayStart = new Date(startUtc)
+      dayEnd = new Date(startUtc + DAY_MS)
+    } else {
+      const wk = weekendRangeJst(new Date())
+      dayStart = wk.start
+      dayEnd = wk.end
+    }
 
     const races = await prisma.race.findMany({
       where: {
