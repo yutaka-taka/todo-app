@@ -73,3 +73,14 @@ scripts/test_schedule_match.js
 
 # Claude Code
 .claude/
+
+# 実行時ログ・評価出力
+logs/
+.evaluation_log.json
+
+# ML モデルのロールバック退避（大容量バイナリ。ml/models/ は別途無視済）
+ml/models_*/
+
+# ローカル個人ファイル（予想出力メモ・ローカル設定/.envショートカット）
+予想.txt
+設定/
