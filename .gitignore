@@ -52,6 +52,8 @@ SnapCrab_*.png
 ml/dataset.parquet
 ml/models/
 ml/venv/
+# 海外戦績スクレイプ（再生成可: node scripts/fetch_foreign_form.js）
+ml/foreign_form.json
 
 # scripts: 生成・一時ファイル
 scripts/ml_dataset.bat

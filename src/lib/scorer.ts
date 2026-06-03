@@ -1,6 +1,7 @@
 import type { HorseStat } from '@prisma/client'
 import { getIntervalBin } from './intervalBins'
 import { adjustMlRatesForStamina } from './staminaAdjust'
+import { applyForeignForm, isForeignFormAvailable } from './foreignForm'
 
 export interface LocalWeights {
   recentFormMult: number
@@ -734,6 +735,8 @@ export interface ScoringOptions {
   // 距離延長×脚質スタミナ補正＋少経験馬の縮約を mlRateMap に適用してから合成する。
   // 617重賞バックテストで G1 Hit@5(1) 92.5%→94.6% を確認し既定採用（staminaAdjust.ts 参照）。
   staminaAdjust?: boolean
+  // ④ 海外form補正: JRA薄実績の海外馬を海外重賞実績で底上げ（既定ON）。foreignForm:false で無効化。
+  foreignForm?: boolean
   // §B5 selectFinalFive の5頭目で「ローテ妙味」枠を有効化する opt-in（既定OFF）。
   // 617重賞バックテストで Hit を下げると判明したため本番では使わない（検証コード互換のため残置）。
   rotationPick?: boolean
@@ -805,8 +808,14 @@ export function localScoreHorses(
     const mlWeight = Math.max(0, Math.min(1, options.mlBlend.mlWeight))
     // 選定前にスタミナ補正＋少経験縮約を適用（既定ON。staminaAdjust:false で無効化可）。
     const mlMap = options.staminaAdjust === false
-      ? options.mlBlend.mlRateMap
+      ? new Map(options.mlBlend.mlRateMap)  // 呼び出し側の Map を壊さないよう複製
       : adjustMlRatesForStamina(options.mlBlend.mlRateMap, stats, race)
+    // ④ 海外form: JRA戦績が薄い(≤FOREIGN_MAX_JRA)0戦海外馬を、海外重賞実績の point-in-time
+    //   事前値で底上げ（カランダガン等の射程外取りこぼし対策）。既定ON・foreignForm:false で無効化可。
+    if (options.foreignForm !== false && isForeignFormAvailable()) {
+      const totalByName = new Map(stats.map((s) => [s.horseName, s.totalRaces ?? 0]))
+      applyForeignForm(mlMap, totalByName, race)
+    }
     for (const s of scored) {
       const ml = mlMap.get(s.horseName)
       if (ml != null) {
