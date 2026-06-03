@@ -110,17 +110,20 @@ async function main() {
       where: { race: { date: { gte: new Date() } } },
       select: { horseName: true }, take: 5000,
     }).then((rs) => rs.map((r) => ({ horseName: r.horseName, netkeibaHorseId: null }))))
-    // ② G1 出走馬（検証対象＝0戦海外馬が混じる）。--g1 でこれだけに絞ることも可。
-    addRows(await prisma.raceResult.findMany({
-      where: { race: { grade: 'G1', date: { gte: new Date('2023-01-01') } } },
-      select: { horseName: true, netkeibaHorseId: true },
-    }))
-    if (!argv.g1) {
-      // ③ その他の重賞出走馬
+    // --future: 予想対象（未来出走馬）だけ取得して即終了（ボタン実行向け・毎回数十秒〜数分）。
+    if (!argv.future) {
+      // ② G1 出走馬（検証対象＝0戦海外馬が混じる）。--g1 でこれだけに絞ることも可。
       addRows(await prisma.raceResult.findMany({
-        where: { race: { grade: { in: ['G2', 'G3'] }, date: { gte: new Date('2023-01-01') } } },
-        select: { horseName: true, netkeibaHorseId: true }, take: 8000,
+        where: { race: { grade: 'G1', date: { gte: new Date('2023-01-01') } } },
+        select: { horseName: true, netkeibaHorseId: true },
       }))
+      if (!argv.g1) {
+        // ③ その他の重賞出走馬
+        addRows(await prisma.raceResult.findMany({
+          where: { race: { grade: { in: ['G2', 'G3'] }, date: { gte: new Date('2023-01-01') } } },
+          select: { horseName: true, netkeibaHorseId: true }, take: 8000,
+        }))
+      }
     }
   }
 

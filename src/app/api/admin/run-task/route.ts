@@ -25,8 +25,8 @@ function buildConfig(task: TaskKey): { cmd: string; args: string[] } | null {
     case 'weekly_prefetch':
       return { cmd: NODE, args: [path.join(ROOT, 'scripts', 'weekly_prefetch.js')] }
     case 'fetch_foreign':
-      // 出走予定馬の海外戦績を取得（0戦海外馬を予想で評価可能に）。resumable。
-      return { cmd: NODE, args: [path.join(ROOT, 'scripts', 'fetch_foreign_form.js')] }
+      // 出走予定馬(未来レース)の海外戦績だけを取得（0戦海外馬を予想で評価可能に）。resumable・即終了。
+      return { cmd: NODE, args: [path.join(ROOT, 'scripts', 'fetch_foreign_form.js'), '--future'] }
     case 'ml_dataset':
       return {
         cmd: 'python',
