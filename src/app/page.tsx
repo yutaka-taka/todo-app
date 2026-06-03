@@ -192,6 +192,13 @@ const ADMIN_TASKS: Record<TaskKey, { label: string; emoji: string; timing: strin
     desc: 'dataset.parquet を使ってモデルを再訓練し model.onnx を更新',
     cls: 'from-purple-600 to-fuchsia-700 hover:from-purple-500 hover:to-fuchsia-600',
   },
+  fetch_foreign: {
+    label: '海外実績取得',
+    emoji: '🌍',
+    timing: '海外馬がいるG1の予想前',
+    desc: '出走予定馬の海外戦績をnetkeibaから取得し、0戦海外馬を評価可能にする（数分・再開可）',
+    cls: 'from-emerald-600 to-green-700 hover:from-emerald-500 hover:to-green-600',
+  },
 }
 
 const SELECTION_REASON_LABELS: Record<string, { label: string; color: string }> = {
@@ -1706,7 +1713,7 @@ export default function Home() {
               <span className="text-[9px] text-slate-600">JRAデータ同期</span>
             </div>
             <div className="space-y-2 mb-3">
-              {(['weekly_update', 'weekly_prefetch'] as TaskKey[]).map((key) => {
+              {(['weekly_update', 'weekly_prefetch', 'fetch_foreign'] as TaskKey[]).map((key) => {
                 const t = ADMIN_TASKS[key]
                 const s = taskStatuses[key]
                 const isRunning = s?.running ?? false

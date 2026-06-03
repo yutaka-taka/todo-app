@@ -24,6 +24,9 @@ function buildConfig(task: TaskKey): { cmd: string; args: string[] } | null {
       return { cmd: NODE, args: [path.join(ROOT, 'scripts', 'weekly_update.js')] }
     case 'weekly_prefetch':
       return { cmd: NODE, args: [path.join(ROOT, 'scripts', 'weekly_prefetch.js')] }
+    case 'fetch_foreign':
+      // 出走予定馬の海外戦績を取得（0戦海外馬を予想で評価可能に）。resumable。
+      return { cmd: NODE, args: [path.join(ROOT, 'scripts', 'fetch_foreign_form.js')] }
     case 'ml_dataset':
       return {
         cmd: 'python',
