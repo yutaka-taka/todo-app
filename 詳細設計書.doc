@@ -1,0 +1,1168 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="UTF-8"/>
+<title>競馬G1予想アプリ 詳細設計書</title>
+<style>
+  body { font-family: "MS 明朝", "游明朝", serif; font-size: 10.5pt; margin: 2cm; color: #000; line-height: 1.6; }
+  h1 { font-size: 18pt; font-weight: bold; text-align: center; border-bottom: 3px solid #1a3a6a; padding-bottom: 8px; margin-bottom: 20px; color: #1a3a6a; }
+  h2 { font-size: 14pt; font-weight: bold; background: #1a3a6a; color: #fff; padding: 4px 10px; margin-top: 24px; margin-bottom: 8px; }
+  h3 { font-size: 12pt; font-weight: bold; border-left: 4px solid #1a3a6a; padding-left: 8px; margin-top: 16px; margin-bottom: 6px; color: #1a3a6a; }
+  h4 { font-size: 11pt; font-weight: bold; margin-top: 12px; margin-bottom: 4px; color: #333; text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 16px 0; font-size: 9.5pt; }
+  th { background: #2c5f9e; color: #fff; padding: 5px 8px; border: 1px solid #888; text-align: left; font-weight: bold; }
+  td { padding: 4px 8px; border: 1px solid #bbb; vertical-align: top; }
+  tr:nth-child(even) td { background: #f0f4fb; }
+  pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-family: "Courier New", monospace; font-size: 9pt; white-space: pre-wrap; word-wrap: break-word; margin: 6px 0; }
+  code { font-family: "Courier New", monospace; font-size: 9pt; background: #f4f4f4; padding: 1px 4px; border: 1px solid #ddd; }
+  .note { background: #fff8dc; border: 1px solid #e0c000; padding: 8px 12px; margin: 8px 0; font-size: 9.5pt; }
+  .section-num { color: #888; margin-right: 4px; }
+  p { margin: 4px 0 8px 0; }
+  ul, ol { margin: 4px 0 8px 0; padding-left: 20px; }
+  li { margin: 2px 0; }
+  .cover { text-align: center; margin: 60px 0 40px 0; }
+  .cover-sub { font-size: 13pt; color: #555; margin: 10px 0; }
+  .toc-item { margin: 3px 0; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1 style="border:none; font-size:22pt; margin-bottom:10px;">競馬G1予想アプリ<br>詳細設計書</h1>
+  <p class="cover-sub">keiba-predict v0.1.0</p>
+  <p class="cover-sub">作成日：2026年5月6日</p>
+  <p class="cover-sub">リポジトリ：C:\keiba（Gitブランチ: keiba）</p>
+</div>
+
+<hr/>
+
+<h2>目次</h2>
+<ol>
+  <li class="toc-item">システム概要</li>
+  <li class="toc-item">技術スタック・依存ライブラリ</li>
+  <li class="toc-item">環境構成・起動方法</li>
+  <li class="toc-item">データベース設計（Prismaスキーマ）</li>
+  <li class="toc-item">スコアリングアルゴリズム詳細</li>
+  <li class="toc-item">自己学習メカニズム</li>
+  <li class="toc-item">netkeiba連携仕様</li>
+  <li class="toc-item">APIエンドポイント仕様</li>
+  <li class="toc-item">フロントエンド設計</li>
+  <li class="toc-item">主要定数・マスタデータ</li>
+  <li class="toc-item">移植手順（他マシンへの導入）</li>
+</ol>
+
+<hr/>
+
+<h2>1. システム概要</h2>
+
+<h3>1.1 アプリケーション概要</h3>
+<p>
+JRA重賞レース（G1/G2/G3）の1着・2着（連対）を予測するウェブアプリケーション。<br>
+過去レース結果をDBに蓄積し、馬ごとの成績統計を構築することで Claude API なしで自律動作する「ローカル予想モード」を提供する。
+レース結果を入力するたびにアルゴリズムが自動調整され、精度が継続的に向上する設計。
+</p>
+
+<h3>1.2 動作モード</h3>
+<table>
+  <tr><th>モード</th><th>条件</th><th>特徴</th></tr>
+  <tr><td><b>ローカル予想モード</b></td><td>HorseStat が 500 頭以上蓄積済み</td><td>Claude API 不要、即時応答</td></tr>
+  <tr><td><b>AI予想モード</b></td><td>HorseStat が 500 頭未満かつ ANTHROPIC_API_KEY 設定済み</td><td>Claude API を呼び出して予想</td></tr>
+  <tr><td><b>フォールバックモード</b></td><td>AIが失敗した場合</td><td>ローカルモードで再実行</td></tr>
+</table>
+
+<h3>1.3 精度実績（2026年5月時点）</h3>
+<table>
+  <tr><th>バージョン</th><th>真ブラインド精度</th><th>主な改善内容</th></tr>
+  <tr><td>v340</td><td>68.7%</td><td>基本アルゴリズム</td></tr>
+  <tr><td>v341</td><td>69.5%</td><td>多因子統合（枠番・調教師・上がり3F等）</td></tr>
+  <tr><td>v342</td><td>78.0%</td><td>RaceResult完全backfill（361G1レース、6745件）</td></tr>
+</table>
+<p class="note">※ 真ブラインド精度＝「1着または2着の馬が上位2頭予想に含まれた割合」。G1レース361件での測定値。</p>
+
+<hr/>
+
+<h2>2. 技術スタック・依存ライブラリ</h2>
+
+<h3>2.1 主要フレームワーク</h3>
+<table>
+  <tr><th>種別</th><th>名称・バージョン</th><th>用途</th></tr>
+  <tr><td>フロントエンド</td><td>Next.js 14.2.29 (App Router)</td><td>Webアプリ全体</td></tr>
+  <tr><td>言語</td><td>TypeScript 5</td><td>型安全な実装</td></tr>
+  <tr><td>スタイリング</td><td>Tailwind CSS 3.4.1</td><td>UIスタイル（ダークテーマ）</td></tr>
+  <tr><td>ORM</td><td>Prisma 5.22.0</td><td>DBアクセス</td></tr>
+  <tr><td>データベース</td><td>PostgreSQL 18.3（ローカル）</td><td>永続ストア</td></tr>
+  <tr><td>AI API</td><td>Anthropic SDK 0.36.3</td><td>Claude API呼び出し（任意）</td></tr>
+</table>
+
+<h3>2.2 依存ライブラリ全一覧</h3>
+<table>
+  <tr><th>パッケージ名</th><th>バージョン</th><th>用途</th></tr>
+  <tr><td>@anthropic-ai/sdk</td><td>^0.36.3</td><td>Claude AI API（予想・学習・検証）</td></tr>
+  <tr><td>@prisma/client</td><td>^5.22.0</td><td>DB操作</td></tr>
+  <tr><td>date-fns</td><td>^3.6.0</td><td>日付処理（startOfDay, endOfDay, addDays等）</td></tr>
+  <tr><td>clsx</td><td>^2.1.1</td><td>CSS クラス名結合</td></tr>
+  <tr><td>tailwind-merge</td><td>^2.5.2</td><td>Tailwindクラスのマージ</td></tr>
+  <tr><td>next</td><td>14.2.29</td><td>Webフレームワーク</td></tr>
+  <tr><td>react / react-dom</td><td>^18</td><td>UI ライブラリ</td></tr>
+  <tr><td>prisma (dev)</td><td>^5.22.0</td><td>スキーマ管理・マイグレーション</td></tr>
+  <tr><td>tsx (dev)</td><td>^4.19.1</td><td>TypeScriptスクリプト実行（seed等）</td></tr>
+  <tr><td>typescript (dev)</td><td>^5</td><td>型チェック</td></tr>
+  <tr><td>tailwindcss (dev)</td><td>^3.4.1</td><td>CSSビルド</td></tr>
+  <tr><td>eslint (dev)</td><td>^8</td><td>コード品質チェック</td></tr>
+</table>
+
+<hr/>
+
+<h2>3. 環境構成・起動方法</h2>
+
+<h3>3.1 ローカル環境要件</h3>
+<table>
+  <tr><th>ソフトウェア</th><th>バージョン</th><th>備考</th></tr>
+  <tr><td>Node.js</td><td>20以上</td><td>npm同梱</td></tr>
+  <tr><td>PostgreSQL</td><td>18.3</td><td>ローカルインストール必須</td></tr>
+  <tr><td>Git</td><td>任意</td><td>ソースコード管理</td></tr>
+</table>
+
+<h3>3.2 環境変数</h3>
+<p>プロジェクトルート（<code>C:\keiba\</code>）に <code>.env</code> および <code>.env.local</code> を配置する。</p>
+<pre>
+# .env
+DATABASE_URL=postgresql://postgres:post@localhost:5432/keiba
+
+# .env.local
+DATABASE_URL=postgresql://postgres:post@localhost:5432/keiba
+ANTHROPIC_API_KEY=sk-ant-api03-（Claude APIキー。解約済みの場合は省略可）
+</pre>
+
+<h3>3.3 DBセットアップ</h3>
+<pre>
+# PostgreSQL でデータベースを作成
+psql -U postgres -c "CREATE DATABASE keiba;"
+
+# スキーマ適用
+npx prisma db push
+
+# 初期データ投入（任意）
+npm run db:seed
+</pre>
+
+<h3>3.4 アプリ起動方法</h3>
+<table>
+  <tr><th>方法</th><th>コマンド</th><th>備考</th></tr>
+  <tr><td>本番起動（推奨）</td><td>デスクトップの「競馬予想アプリ起動.bat」をダブルクリック</td><td>ビルド済みを起動</td></tr>
+  <tr><td>開発サーバー</td><td><code>cd C:\keiba &amp;&amp; npm run dev</code></td><td>ポート3000、ホットリロード</td></tr>
+  <tr><td>再ビルド&amp;起動</td><td><code>npm run build &amp;&amp; npm run start</code></td><td>本番ビルド後に起動</td></tr>
+</table>
+
+<h3>3.5 npmスクリプト一覧</h3>
+<table>
+  <tr><th>スクリプト</th><th>内容</th></tr>
+  <tr><td><code>npm run dev</code></td><td>開発サーバー起動（ポート3000）</td></tr>
+  <tr><td><code>npm run build</code></td><td>prisma generate + Next.js本番ビルド</td></tr>
+  <tr><td><code>npm run start</code></td><td>本番サーバー起動（要ビルド済み）</td></tr>
+  <tr><td><code>npm run db:push</code></td><td>Prismaスキーマ → PostgreSQLに反映</td></tr>
+  <tr><td><code>npm run db:seed</code></td><td>初期レースデータ投入（tsx prisma/seed.ts）</td></tr>
+</table>
+
+<hr/>
+
+<h2>4. データベース設計（Prismaスキーマ）</h2>
+
+<h3>4.1 テーブル一覧</h3>
+<table>
+  <tr><th>テーブル名</th><th>主な用途</th><th>レコード数（参考）</th></tr>
+  <tr><td>Race</td><td>レース基本情報</td><td>約6,745件</td></tr>
+  <tr><td>RaceEntry</td><td>出走馬情報（週末レース登録時に投入）</td><td>約5,786件</td></tr>
+  <tr><td>RaceResult</td><td>過去レースの全着順結果</td><td>約16,321件</td></tr>
+  <tr><td>Prediction</td><td>アプリの予想結果（Top7を保存）</td><td>予想ごとに7件</td></tr>
+  <tr><td>HorseStat</td><td>馬別累積成績統計（予想の中核データ）</td><td>約779頭</td></tr>
+  <tr><td>AlgorithmConfig</td><td>自己学習による重みパラメータ履歴</td><td>バージョンごと</td></tr>
+  <tr><td>AnalysisLog</td><td>Claude AIの分析ログ</td><td>分析済みレースごと</td></tr>
+</table>
+
+<h3>4.2 Race テーブル</h3>
+<table>
+  <tr><th>フィールド名</th><th>型</th><th>必須</th><th>説明</th></tr>
+  <tr><td>id</td><td>String (cuid)</td><td>◎</td><td>プライマリキー</td></tr>
+  <tr><td>name</td><td>String</td><td>◎</td><td>レース名（例：天皇賞（春）2026）</td></tr>
+  <tr><td>date</td><td>DateTime</td><td>◎</td><td>開催日</td></tr>
+  <tr><td>venue</td><td>String</td><td>◎</td><td>競馬場名（東京・中山・阪神・京都 等）</td></tr>
+  <tr><td>grade</td><td>String</td><td>◎</td><td>G1 / G2 / G3 / 通常</td></tr>
+  <tr><td>surface</td><td>String</td><td>◎</td><td>芝 / ダート</td></tr>
+  <tr><td>distance</td><td>Int</td><td>◎</td><td>距離（メートル）</td></tr>
+  <tr><td>analyzed</td><td>Boolean</td><td>◎</td><td>Claude学習済みフラグ（デフォルト false）</td></tr>
+  <tr><td>trackCondition</td><td>String?</td><td>△</td><td>馬場状態（良/稍重/重/不良）</td></tr>
+  <tr><td>createdAt / updatedAt</td><td>DateTime</td><td>◎</td><td>自動タイムスタンプ</td></tr>
+  <tr><td colspan="4"><b>ユニーク制約：</b> [name, date]　<b>インデックス：</b> [date, grade], [analyzed]</td></tr>
+</table>
+
+<h3>4.3 RaceEntry テーブル</h3>
+<table>
+  <tr><th>フィールド名</th><th>型</th><th>説明</th></tr>
+  <tr><td>id</td><td>String (cuid)</td><td>プライマリキー</td></tr>
+  <tr><td>raceId</td><td>String</td><td>Race への外部キー（CASCADE DELETE）</td></tr>
+  <tr><td>horseNumber</td><td>Int</td><td>馬番（1〜18）</td></tr>
+  <tr><td>frameNumber</td><td>Int?</td><td>枠番（1〜8）</td></tr>
+  <tr><td>horseName</td><td>String</td><td>馬名</td></tr>
+  <tr><td>age</td><td>Int?</td><td>馬齢</td></tr>
+  <tr><td>sex</td><td>String?</td><td>性別（牡/牝/セ）</td></tr>
+  <tr><td>weight</td><td>Float?</td><td>馬体重（kg）</td></tr>
+  <tr><td>horseWeight</td><td>Int?</td><td>当日発表の馬体重（当日取得、kg）</td></tr>
+  <tr><td>jockey</td><td>String?</td><td>騎手名</td></tr>
+  <tr><td>trainer</td><td>String?</td><td>調教師名</td></tr>
+  <tr><td>odds</td><td>Float?</td><td>単勝オッズ（小数）</td></tr>
+  <tr><td>popularity</td><td>Int?</td><td>単勝人気順位（1〜18）</td></tr>
+  <tr><td colspan="3"><b>ユニーク制約：</b> [raceId, horseNumber]</td></tr>
+</table>
+
+<h3>4.4 RaceResult テーブル</h3>
+<table>
+  <tr><th>フィールド名</th><th>型</th><th>説明</th></tr>
+  <tr><td>id</td><td>String (cuid)</td><td>プライマリキー</td></tr>
+  <tr><td>raceId</td><td>String</td><td>Race への外部キー（CASCADE DELETE）</td></tr>
+  <tr><td>finishPosition</td><td>Int</td><td>着順（1着=1, 2着=2 ...）</td></tr>
+  <tr><td>horseNumber</td><td>Int</td><td>馬番</td></tr>
+  <tr><td>horseName</td><td>String</td><td>馬名</td></tr>
+  <tr><td>age</td><td>Int?</td><td>馬齢</td></tr>
+  <tr><td>sex</td><td>String?</td><td>性別</td></tr>
+  <tr><td>weight</td><td>Float?</td><td>斤量（kg）</td></tr>
+  <tr><td>horseWeight</td><td>Int?</td><td>馬体重（kg）</td></tr>
+  <tr><td>jockey</td><td>String?</td><td>騎手名</td></tr>
+  <tr><td>trainer</td><td>String?</td><td>調教師名</td></tr>
+  <tr><td>time</td><td>String?</td><td>タイム（例："2:12.4"）</td></tr>
+  <tr><td>margin</td><td>String?</td><td>着差（例："1/2"）</td></tr>
+  <tr><td>odds</td><td>Float?</td><td>単勝オッズ</td></tr>
+  <tr><td>popularity</td><td>Int?</td><td>人気順位</td></tr>
+  <tr><td colspan="3"><b>ユニーク制約：</b> [raceId, horseNumber]</td></tr>
+</table>
+
+<h3>4.5 Prediction テーブル</h3>
+<table>
+  <tr><th>フィールド名</th><th>型</th><th>説明</th></tr>
+  <tr><td>id</td><td>String (cuid)</td><td>プライマリキー</td></tr>
+  <tr><td>raceId</td><td>String</td><td>Race への外部キー（CASCADE DELETE）</td></tr>
+  <tr><td>horseNumber</td><td>Int?</td><td>馬番（確定していない場合はnull）</td></tr>
+  <tr><td>horseName</td><td>String</td><td>馬名</td></tr>
+  <tr><td>placeRate</td><td>Float</td><td>予測連対率（%）</td></tr>
+  <tr><td>rank</td><td>Int</td><td>予想順位（1〜7）</td></tr>
+  <tr><td>factors</td><td>Json?</td><td>スコア詳細（reason, recentForm, distanceSuitability, courseRecord, jockeyStats, _bonuses）</td></tr>
+</table>
+
+<h3>4.6 HorseStat テーブル（最重要）</h3>
+<table>
+  <tr><th>フィールド名</th><th>型</th><th>説明</th></tr>
+  <tr><td>id</td><td>String (cuid)</td><td>プライマリキー</td></tr>
+  <tr><td>horseName</td><td>String (unique)</td><td>馬名（ユニーク）</td></tr>
+  <tr><td>totalRaces</td><td>Int</td><td>通算出走数</td></tr>
+  <tr><td>totalPlaces</td><td>Int</td><td>通算連対数（1〜2着）</td></tr>
+  <tr><td>g1Races / g1Places</td><td>Int</td><td>G1出走数 / G1連対数</td></tr>
+  <tr><td>g2Races / g2Places</td><td>Int</td><td>G2出走数 / G2連対数</td></tr>
+  <tr><td>g3Races / g3Places</td><td>Int</td><td>G3出走数 / G3連対数</td></tr>
+  <tr><td>distanceData</td><td>Json</td><td>距離別成績 {"1600":{"races":3,"places":2},...}</td></tr>
+  <tr><td>venueData</td><td>Json</td><td>競馬場別成績 {"東京":{"races":5,"places":3},...}</td></tr>
+  <tr><td>surfaceData</td><td>Json</td><td>馬場別成績 {"芝":{"races":10,"places":6},...}</td></tr>
+  <tr><td>raceNameData</td><td>Json</td><td>レース名別成績 {"天皇賞（春）":{"races":2,"places":1},...}</td></tr>
+  <tr><td>trackCondData</td><td>Json</td><td>馬場状態別成績 {"良":{"races":8,"places":3},...}</td></tr>
+  <tr><td>recentForm</td><td>String?</td><td>直近5走着順 "1-2-1-3-2"（最新順）</td></tr>
+  <tr><td>recentGrades</td><td>String?</td><td>直近5走グレード "G1-G2-G3-G1-G2"（recentFormと対応）</td></tr>
+  <tr><td>lastRaceDate</td><td>DateTime?</td><td>最終出走日</td></tr>
+  <tr><td>lastRacePopularity</td><td>Int?</td><td>最終出走時の人気順位</td></tr>
+  <tr><td>runningStyle</td><td>String?</td><td>脚質："逃" / "先" / "差" / "追"</td></tr>
+  <tr><td>sire</td><td>String?</td><td>父（種牡馬）</td></tr>
+  <tr><td>dam</td><td>String?</td><td>母（繁殖牝馬）</td></tr>
+  <tr><td>sireOfSire</td><td>String?</td><td>父父</td></tr>
+  <tr><td>damOfSire</td><td>String?</td><td>父母（父の母）</td></tr>
+  <tr><td>sireOfDam</td><td>String?</td><td>母父（ブルードメアサイアー）</td></tr>
+  <tr><td>damOfDam</td><td>String?</td><td>母母（母の母）</td></tr>
+</table>
+
+<h3>4.7 AlgorithmConfig テーブル</h3>
+<table>
+  <tr><th>フィールド名</th><th>型</th><th>説明</th></tr>
+  <tr><td>id</td><td>String (cuid)</td><td>プライマリキー</td></tr>
+  <tr><td>version</td><td>Int</td><td>バージョン番号（自動インクリメント）</td></tr>
+  <tr><td>isActive</td><td>Boolean</td><td>現在有効なバージョン（最新1件のみtrue）</td></tr>
+  <tr><td>rules</td><td>String (Text)</td><td>予想ルール（Claude生成テキスト）</td></tr>
+  <tr><td>insights</td><td>String? (JSON Text)</td><td>localWeights, gradeWeights, localAccuracy, lastLearnedAt</td></tr>
+  <tr><td>analyzedCount</td><td>Int</td><td>学習済みレース数</td></tr>
+  <tr><td>accuracy</td><td>Float?</td><td>推定精度（%）</td></tr>
+</table>
+
+<p>insights JSONの構造例：</p>
+<pre>
+{
+  "localWeights": {
+    "recentFormMult": 0.87,
+    "distanceMult": 1.28,
+    ...
+  },
+  "gradeWeights": {
+    "G1": { "distanceMult": 1.40, ... },
+    "G2G3": { "distanceMult": 1.10, ... }
+  },
+  "localAccuracy": 68.5,
+  "lastLearnedAt": "2026-05-06T10:00:00.000Z"
+}
+</pre>
+
+<hr/>
+
+<h2>5. スコアリングアルゴリズム詳細</h2>
+
+<h3>5.1 全体フロー（localScoreHorses 関数）</h3>
+<p>ファイル：<code>src/lib/scorer.ts</code></p>
+<pre>
+入力: entries（出走馬リスト）, race（レース情報）, stats（HorseStat配列）, weights（重み）, options
+  ↓
+Step 1: 展開予測（脚質分布 → ペースタイプ high/medium/slow 推定）
+  ↓
+Step 2: 馬ごとに buildScore() を実行（全因子のボーナス計算）
+  ↓
+Step 3: softmax正規化（オプション、通常はオフ）
+  ↓
+Step 4: placeRateでソート → Top 7を抽出
+  ↓
+Step 5: RANK_CAPS で各順位の上限を適用
+Step 6: 上位2〜3位のスコア差が小さい場合の微調整
+  ↓
+Step 7: キャリブレーション補正（学習済み補正曲線を適用）
+  ↓
+出力: ScoredHorse[7]（rank 1〜7, horseName, placeRate, factors）
+</pre>
+
+<h3>5.2 デフォルト重み（DEFAULT_WEIGHTS v342）</h3>
+<table>
+  <tr><th>パラメータ名</th><th>値</th><th>対応因子</th></tr>
+  <tr><td>recentFormMult</td><td>0.87</td><td>直近フォーム（近走成績の加重平均着順）</td></tr>
+  <tr><td>distanceMult</td><td>1.28</td><td>距離適性（対象距離±200m以内の実績）</td></tr>
+  <tr><td>venueMult</td><td>1.27</td><td>競馬場相性（同一競馬場での連対率）</td></tr>
+  <tr><td>surfaceMult</td><td>1.05</td><td>馬場（芝/ダート別連対率）</td></tr>
+  <tr><td>g1Mult</td><td>0.90</td><td>G1実績（グレード別G1連対率）</td></tr>
+  <tr><td>ageMult</td><td>0.50</td><td>年齢補正（3歳ポテンシャル〜7歳ベテラン）</td></tr>
+  <tr><td>jockeyMult</td><td>0.98</td><td>騎手ランク（JOCKEY_RANKS辞書）</td></tr>
+  <tr><td>raceAffinityMult</td><td>1.0</td><td>同名レース相性（過去の同レース成績）</td></tr>
+  <tr><td>trackCondMult</td><td>1.0</td><td>馬場状態（良/稍重/重/不良）</td></tr>
+  <tr><td>gateMult</td><td>1.0</td><td>枠番（距離・馬場別に内外枠の優劣）</td></tr>
+  <tr><td>trainerMult</td><td>1.0</td><td>調教師ランク（TRAINER_RANKS辞書）</td></tr>
+  <tr><td>lastThreeFurlongMult</td><td>1.0</td><td>前走上がり3F（末脚評価）</td></tr>
+  <tr><td>restIntervalMult</td><td>1.0</td><td>出走間隔（叩き良化パターン考慮）</td></tr>
+  <tr><td>courseFeatureMult</td><td>0.88</td><td>コース特性（傾斜・方向・直線距離の類似度）</td></tr>
+  <tr><td>paceMult</td><td>1.0</td><td>展開（脚質×ペースの相性）</td></tr>
+  <tr><td>oddsMult</td><td>1.8</td><td>市場人気・オッズ（最強シグナル）</td></tr>
+  <tr><td>bloodlineMult</td><td>1.0</td><td>血統（2世代全祖先の距離・馬場適性）</td></tr>
+  <tr><td>weightAbsMult</td><td>1.0</td><td>馬体重絶対値（基準体重からの偏差）</td></tr>
+  <tr><td>jockeyVenueDistMult</td><td>1.0</td><td>騎手×競馬場×距離グループの連合成績</td></tr>
+</table>
+
+<h3>5.3 ベーススコア（effectiveBase）の計算</h3>
+
+<h4>Step 1: Laplace平滑化による基本連対率</h4>
+<pre>
+smoothedRate(places, races) = (places + 1) / (races + 9)
+// 例: 10戦3連対 → (3+1)/(10+9) = 4/19 ≈ 21%
+// 0戦0連対（データなし） → 1/9 ≈ 11%
+baseSmoothed = smoothedRate(totalPlaces, totalRaces)
+effectiveBase = baseSmoothed × 100
+</pre>
+
+<h4>Step 2: グレード別ブレンド（G1レースの場合）</h4>
+<pre>
+① G1実績がある場合:
+   g1Smoothed = smoothedRate(g1Places, g1Races)
+   g1Weight = min(g1Races, 10) / 10 × 0.6  （最大0.6）
+   effectiveBase = baseSmoothed × (1-g1Weight) × 100 + g1Smoothed × g1Weight × 100
+
+② G2/G3実績が全体率より高い場合（G1経験ゼロ馬の是正）:
+   g2g3Smoothed = smoothedRate(g2g3Places, g2g3Races)
+   if g2g3Smoothed × 100 > effectiveBase:
+     g2g3Weight = min(g2g3Races, 10) / 10 × 0.3  （最大0.3）
+     effectiveBase = effectiveBase × (1-g2g3Weight) + g2g3Smoothed × 100 × g2g3Weight
+</pre>
+<p class="note">G2/G3ブレンドは「G2/G3専門好走馬がG1初挑戦時に不当低評価される問題」を是正する。effectiveBaseを下げる方向には動かない。</p>
+
+<h4>Step 3: 少データ馬への人気ベースprior</h4>
+<pre>
+totalRaces &lt; 4 かつ oddsPopularity が取得済みの場合:
+  popPrior = {1人気:55, 2人気:45, 3人気:35, 4-5人気:28, 6-8人気:20, 9位以下:15}
+  priorWeight = (4 - totalRaces) / 4 × 0.7
+  effectiveBase = effectiveBase × (1-priorWeight) + popPrior × priorWeight
+</pre>
+
+<h4>Step 4: 上限・下限のキャップ</h4>
+<pre>
+cappedBase = min(effectiveBase, 50)          // 基底スコアの上限 = 50
+minFloor = G1経験2戦以上 ? 22 : 18           // 下限
+finalRate = max(minFloor, cappedBase + totalBonus)
+</pre>
+
+<h3>5.4 全ボーナス因子の詳細</h3>
+
+<h4>① recentFormBonus（近走フォーム、-10〜+24pt）</h4>
+<pre>
+重み: ws = [0.55, 0.25, 0.12, 0.05, 0.03]  （前走が最大重みで最新優先）
+グレード係数: GRADE_FORM_FACTORS = {G1: 2.0, G2: 1.5, G3: 1.2}
+  → adjustedPos = positions[i] / gradeFactor（G1優勝は0.5扱いで高評価）
+
+avgPos（低いほど良）:
+  ≤ 1.4 → +24pt（直近で圧倒的好走）
+  ≤ 1.8 → +20pt
+  ≤ 2.2 → +15pt
+  ≤ 3.0 → +8pt
+  ≤ 4.5 → +1pt
+  ≤ 5.5 → 0pt
+  > 7.0 → -10pt
+  その他 → -4pt
+
+追加ボーナス（特殊パターン）:
+  直近2走とも連対       → +5pt
+  前走1着               → +3pt
+  3連勝                 → +5pt
+  巻き返し候補（前走8着以下 + 前々走から2走連続連対）→ +6pt
+  叩き良化候補（前走4〜5着 + 2〜3走前から連続連対）  → +4pt
+</pre>
+
+<h4>② distanceBonus（距離適性、-5〜+15pt）</h4>
+<pre>
+同一距離実績あり:
+  連対率 ≥ 50% → round(15 × 実績充足度)pt
+  連対率 ≥ 30% → round(7 × 実績充足度)pt
+  それ以下     → -round(5 × 実績充足度)pt
+  （充足度 = min(races, 5) / 5）
+
+同一距離実績なし → ±200m, ±400m の近隣距離から補間（係数0.5, 0.3）
+</pre>
+
+<h4>③ venueBonus（競馬場相性、-4〜+10pt）</h4>
+<pre>
+同一競馬場の連対率に基づきボーナス算出（充足度補正あり）
+</pre>
+
+<h4>④ surfaceBonus（馬場種別、-8〜+8pt）</h4>
+<pre>
+芝/ダートそれぞれの連対率に基づき算出（充足度補正あり）
+</pre>
+
+<h4>⑤ g1Bonus（G1実績、-8〜+18pt）</h4>
+<pre>
+G1初挑戦:  -6pt（経験不足ペナルティ）
+G1 1〜2戦: -3pt
+G1 3〜4戦:  0pt
+G1連対率25〜50%: +6pt
+G1連対率50%超: +12pt
+G1で複数回1着: +18ptまで
+
+前哨戦実績補正: 前走が対象G1の前哨戦リストに含まれ、かつ連対なら +4〜6pt
+</pre>
+
+<h4>⑥ ageBonus（年齢補正、-4〜+3pt）</h4>
+<pre>
+3歳: +3pt（潜在能力）
+4〜5歳: +2pt（充実期）
+6歳: 0pt
+7歳以上: -4pt（晩年ペナルティ）
+</pre>
+
+<h4>⑦ jockeyBonus（騎手ランク、0〜14pt）</h4>
+<pre>
+JOCKEY_RANKS辞書に基づき直接ポイント加算（後述 §10.1）
+前方一致で短縮名に対応（例："津村" → "津村明秀"）
+</pre>
+
+<h4>⑧ potentialBonus（新興馬ポテンシャル、0〜+10pt）</h4>
+<pre>
+totalRaces ≤ 3 かつ連対率 ≥ 50%の場合、早期高成績を評価
+</pre>
+
+<h4>⑨ trendBonus（近走トレンド、-5〜+9pt）</h4>
+<pre>
+GRADE_FORM_FACTORS補正後の直近着順でトレンド判定
+急上昇トレンド（着順が改善し続けている）→ +7〜9pt
+開花パターン（直近2走連対、それ以前着外）→ +7pt
+急落トレンド → -5pt
+</pre>
+
+<h4>⑩ raceAffinityBonus（同名レース相性、-4〜+18pt）</h4>
+<pre>
+同一レース名（年号除去）での過去成績を評価
+連対率 ≥ 50% × 充足度補正 → 最大+18pt
+</pre>
+
+<h4>⑪ prepBonus（前哨戦、0〜+6pt）</h4>
+<pre>
+PREP_RACES辞書に定義された対象G1の前哨戦を直前走した場合
+前哨戦で連対かつ完全適合 → +6pt
+前哨戦で3着以内 → +3pt
+</pre>
+
+<h4>⑫ trackCondBonus（馬場状態、-8〜+10pt）</h4>
+<pre>
+良/稍重/重/不良別の連対率実績に基づき算出
+</pre>
+
+<h4>⑬ gateBonus（枠番、-4〜+4pt）</h4>
+<pre>
+芝短距離(〜1400m): 内枠（1-2）+4, 内枠（3-4）+2, 外枠（8以上）-4
+芝中距離(1400-2000m): 内枠（1-3）+2, 外枠（8以上）-1
+芝長距離(2000m超): 内枠（1-3）+1
+ダート短距離(〜1400m): 内枠（1-2）-1, 中枠（4-6）+3, 外枠（8以上）-2
+</pre>
+
+<h4>⑭ trainerBonus（調教師ランク、0〜+10pt）</h4>
+<pre>
+TRAINER_RANKS辞書に基づき直接ポイント加算（後述 §10.2）
+</pre>
+
+<h4>⑮ ltfBonus（前走上がり3F、-6〜+12pt）</h4>
+<pre>
+基準: 芝 33.5秒, ダート 36.5秒
+33.0秒以下（芝）or 35.5秒以下（ダート）→ +12pt
+33.5秒以下（芝）or 36.0秒以下（ダート）→ +6pt
+34.0秒以上（芝）or 37.5秒以上（ダート）→ -6pt
+</pre>
+
+<h4>⑯ restIntervalBonus（出走間隔、-8〜+5pt）</h4>
+<pre>
+13日以内:  -8pt（叩き良化型は-1）
+14〜20日:  -3pt（叩き良化型は0〜+3）
+21〜35日:  0pt（叩き良化型は+2〜+5）
+36〜56日:  -1pt
+57〜84日:  -1pt
+85〜150日: -3pt
+151日以上: -5pt
+
+叩き良化型の判定:
+  前走で1-3番人気だったが5着以下 AND
+  recentFormで着順改善パターンが2回以上
+</pre>
+
+<h4>⑰ courseFeatureBonus（コース特性、0〜+8pt）</h4>
+<pre>
+傾斜(steep/mild/flat), 方向(right/left), 直線距離, 形状(tight/wide)の
+類似度スコアで他競馬場での実績から補正
+（COURSE_FEATURES辞書の10競馬場を参照）
+</pre>
+
+<h4>⑱ paceBonus（展開相性、-10〜+8pt）</h4>
+<pre>
+脚質分布から展開ペースを推定（フロント比率 ≥ 50% → high, ≤ 20% → slow）
+ハイペース: 逃-10, 先-5, 差+5, 追+8
+スローペース: 逃+8, 先+6, 差-3, 追-6
+ミドル: ±0（補正なし）
+</pre>
+
+<h4>⑲ oddsBonus（市場人気、-7〜+13pt）</h4>
+<pre>
+実オッズ値（oddsFloat）が取得済みの場合:
+  2.0倍未満 → +13pt（断然人気）
+  3.0倍未満 → +10pt
+  4.5倍未満 → +6pt
+  7.0倍未満 → +2pt
+  10.0倍未満 → -1pt
+  20.0倍未満 → -4pt
+  20.0倍以上 → -7pt
+
+人気順位フォールバック（オッズ未取得時）:
+  1番人気 → +12pt, 2番人気 → +8pt, 3番人気 → +5pt
+  4-5番人気 → +2pt, 6-8番人気 → -1pt, 9-12番人気 → -4pt, 13位以下 → -7pt
+
+データ量による重み調整:
+  totalRaces ≥ 10 → oddsData × 0.35（歴史データを重視）
+  totalRaces ≥ 4  → oddsData × 0.65
+  totalRaces &lt; 4  → oddsData × 1.0（データ少ない馬はオッズを主信号）
+</pre>
+
+<h4>⑳ bloodlineBonus（血統、-8〜+12pt）</h4>
+<pre>
+6祖先（父,母,父父,父母,母父,母母）を SIRE_TRAITS辞書でマッチング
+重み係数: 父1.0, 母0.8, 父父0.45, 父母0.35, 母父0.45, 母母0.3
+SIRE_TRAITSに距離適性（short/mile/middle/long）と馬場適性（turf/dirt）を定義
+レースの距離・馬場と合致する祖先数 × pts でボーナス計算
+</pre>
+
+<h4>㉑ weightAbsBonus（馬体重絶対値、-3〜+2pt）</h4>
+<pre>
+参照体重 = 当日馬体重 - 前走比増減（= 前走時の馬体重）
+偏差 = (当日馬体重 - 参照体重) / 参照体重
+
+芝: 偏差 ±0.5%以内 → +2pt（ベスト体重）
+    偏差 ±1.2%以内 → +1pt
+    偏差 +2.5%超  → -3pt（太め残り）
+    偏差 -2.5%未満 → -3pt（痩せすぎ）
+ダート: 偏差 0〜+2% → +2pt（重め維持）
+</pre>
+
+<h4>㉒ jockeyVenueDistBonus（騎手×競馬場×距離グループ、0〜+8pt）</h4>
+<pre>
+距離グループ: short(〜1400), mile(1500-1699), middle(1700-2399), long(2400+)
+3要素組み合わせキーで連対率を集計し評価
+races ≥ 3 かつ連対率 ≥ 40% → +8pt
+races ≥ 3 かつ連対率 ≥ 25% → +3pt
+races ≥ 5 かつ連対率 &lt; 10% → -4pt
+</pre>
+
+<h3>5.5 順位キャップ（RANK_CAPS）</h3>
+<table>
+  <tr><th>順位</th><th>キャップ値</th><th>実測平均連対率（参考）</th></tr>
+  <tr><td>1位</td><td>55%</td><td>約31%</td></tr>
+  <tr><td>2位</td><td>45%</td><td>約25%</td></tr>
+  <tr><td>3位</td><td>36%</td><td>約20%</td></tr>
+  <tr><td>4位</td><td>28%</td><td>約17%</td></tr>
+  <tr><td>5位</td><td>23%</td><td>約14%</td></tr>
+  <tr><td>6位</td><td>19%</td><td>約13%</td></tr>
+  <tr><td>7位</td><td>16%</td><td>約13%</td></tr>
+</table>
+<p class="note">表示連対率は参考値。実際の的中可否はランク順位で判断する。</p>
+
+<h3>5.6 データなし馬のスコア計算</h3>
+<pre>
+DBに成績データが存在しない馬の処理:
+baseScore = 25（固定）
+
+部分ボーナス:
+  年齢 3歳: +3, 4-5歳: +2, 7歳以上: -3
+  体重変動 ±3kg以内: +2, >10kg: -5
+  騎手ランク × 0.9（JOCKEY_RANKSで評価）
+  調教師ランク × 0.6（TRAINER_RANKSで評価）
+  枠番ボーナス × 0.4
+  上がり3F × 0.5
+  人気（1-3位）: baseScore を +14/+10/+7 底上げ
+  最上位騎手 × 最上位厩舎: +4pt（コンビボーナス）
+
+上限・下限:
+  max(18, min(65, baseScore + partialBonus))
+</pre>
+
+<hr/>
+
+<h2>6. 自己学習メカニズム</h2>
+
+<h3>6.1 自己学習のトリガーと処理フロー</h3>
+<p>ファイル：<code>src/lib/localAutoLearn.ts</code></p>
+<pre>
+POST /api/results（1着・2着入力）
+  ↓
+autoLearnFromNewResult(raceId, first, second) 呼び出し
+  ↓
+Phase 1: HorseStat更新
+  - 1着・2着馬: totalRaces+1, totalPlaces+1, recentForm更新
+  - その他出走馬: totalRaces+1のみ
+  ↓
+Phase 2: 過去40レースの因子精度計算（computeFactorAccuracy）
+  ↓
+Phase 3: 重み調整（nudgeWeights）
+  ↓
+Phase 4: 新 AlgorithmConfig 作成・保存
+  ↓
+Phase 5: 過去50レースで全体精度を再計算
+</pre>
+
+<h3>6.2 因子精度計算（computeFactorAccuracy）</h3>
+<pre>
+対象: 過去40レースで Prediction と RaceResult が両方存在するもの
+19因子について:
+  ヒット判定: 該当因子のボーナス値が ≥+2 または ≤-2 の場合のみカウント
+    正ボーナス かつ 的中（予想馬が1着または2着）→ hit+1
+    負ボーナス かつ 非的中                         → hit+1
+    それ以外                                         → hit+0
+    total+1（いずれの場合も）
+</pre>
+
+<h3>6.3 重み調整式（nudgeWeights）</h3>
+<pre>
+BASE_STEP = 0.09  // 最小調整幅
+MIN_MULT = 0.3  // 重みの最低値
+MAX_MULT = 2.0  // 重みの最高値
+
+for each factor:
+  hitRate = hits / total
+  if hitRate > 0.58:
+    delta = +BASE_STEP × (1 + (hitRate - 0.58) × 2.5)   // 最大 +0.36
+  elif hitRate < 0.35:
+    delta = -BASE_STEP × (1 + (0.35 - hitRate) × 2.5)   // 最大 -0.36
+  else:
+    delta = 0  // 35〜58%は中立
+  newWeight = clamp(currentWeight + delta, 0.3, 2.0)
+</pre>
+
+<h3>6.4 重みの読み込み（getLocalWeights）</h3>
+<pre>
+1. AlgorithmConfig から isActive=true の最新版を取得
+2. insights JSON の localWeights を解析
+3. グレード別重み（gradeWeights.G1 / gradeWeights.G2G3）が存在すれば上書き
+4. 見つからなければ DEFAULT_WEIGHTS を返す
+</pre>
+
+<hr/>
+
+<h2>7. netkeiba連携仕様</h2>
+
+<h3>7.1 利用URLと取得内容</h3>
+<table>
+  <tr><th>機能</th><th>URL</th><th>エンコード</th><th>取得内容</th></tr>
+  <tr><td>レース日程</td><td>https://race.sp.netkeiba.com/?pid=race_list&amp;kaisai_date=YYYYMMDD</td><td>EUC-JP</td><td>race_id、レース情報</td></tr>
+  <tr><td>出走馬・馬体重</td><td>https://race.netkeiba.com/race/shutuba.html?race_id=XXXXXXXXXX</td><td>EUC-JP</td><td>馬番、馬体重(kg)、前走比(±kg)</td></tr>
+  <tr><td>単勝オッズ</td><td>https://race.netkeiba.com/odds/odds_get_form.html?type=b1&amp;race_id=XXXXXXXXXX</td><td>EUC-JP</td><td>馬番ごとの単勝オッズ</td></tr>
+</table>
+
+<h3>7.2 race_id フォーマット</h3>
+<pre>
+フォーマット: YYYYKKMMRR
+  YYYY: 年（4桁）
+  KK: 競馬場コード（01=札幌, 02=函館, 03=福島, 04=新潟, 05=東京,
+                    06=中山, 07=中京, 08=京都, 09=阪神, 10=小倉）
+  MM: 開催回（2桁）
+  RR: レース番号（11〜12を優先）
+
+例: 2026050508 = 2026年 東京 第5回 第8レース
+</pre>
+
+<h3>7.3 findNetkeibaRaceId 関数</h3>
+<pre>
+入力: venue（競馬場名）, raceDate（開催日）
+処理:
+  1. 競馬場名 → 競馬場コードへの変換
+  2. 当日または直前土曜のスケジュールページを取得
+  3. HTMLから &lt;a href="...shutuba.html?race_id=XXXXXXXXXX"&gt; を抽出
+  4. G1クラス（race_num=11または12を優先）のrace_idを返す
+出力: race_id（String）または null
+</pre>
+
+<h3>7.4 fetchOddsAndPopularity 関数</h3>
+<pre>
+入力: netkeibaRaceId
+処理:
+  1. odds_get_form.html を EUC-JP でデコード
+  2. HTMLから馬番とオッズをパース
+  3. オッズ昇順でソートして人気順位を付与
+出力: Record&lt;horseNumber, { popularity: number; odds: number }&gt;
+</pre>
+
+<h3>7.5 馬体重スクレイピング（scrapeWeights）</h3>
+<pre>
+HTMLパターン（shutuba.html内）:
+  &lt;tr class="HorseList"&gt;
+    &lt;td class="Umaban1"&gt;1&lt;/td&gt;  ← 馬番
+    &lt;td class="Weight"&gt; 480 &lt;small&gt;(+5)&lt;/small&gt; &lt;/td&gt;  ← 馬体重・増減
+
+正規表現:
+  馬番: /class="Umaban\d+[^"]*"[^>]*>(\d{1,2})&lt;/
+  体重: /class="Weight"[^>]*>\s*(\d{3,4})\s*&lt;small&gt;\(([+\-]?\d+)\)&lt;\/small&gt;/
+</pre>
+
+<hr/>
+
+<h2>8. APIエンドポイント仕様</h2>
+
+<h3>8.1 POST /api/predict（予想生成）</h3>
+<table>
+  <tr><th>項目</th><th>内容</th></tr>
+  <tr><td>maxDuration</td><td>300秒</td></tr>
+  <tr><td>リクエスト</td><td>JSON: {raceId, horseWeights, trackCondition, trainingData}</td></tr>
+  <tr><td>レスポンス</td><td>JSON: {predictions[7], analysis, mode, horseStatCount, localModeReady}</td></tr>
+</table>
+
+<p><b>リクエスト詳細:</b></p>
+<pre>
+{
+  "raceId": "clxxxx...",
+  "horseWeights": {
+    "エフフォーリア": {"weight": 488, "weightChange": 2}
+  },
+  "trackCondition": "良",
+  "trainingData": {
+    "エフフォーリア": {"lastThreeFurlong": 33.2, "runningStyle": "先"}
+  }
+}
+</pre>
+
+<p><b>処理フロー:</b></p>
+<pre>
+1. RaceとRaceEntryをDBから取得
+2. horseWeights, trainingData をエントリにマージ
+3. findNetkeibaRaceId → fetchOddsAndPopularity でオッズ取得（失敗しても続行）
+4. オッズをエントリにマージ（oddsFloat, oddsPopularity）
+5. モード判定:
+   - horseStatCount ≥ 500 かつ出走馬確定 → ローカルモード
+   - ANTHROPIC_API_KEY あり → AIモード（失敗時はローカルにフォールバック）
+   - それ以外 → ローカルモード
+6. 予想を Prediction テーブルに保存（deleteMany→createMany）
+</pre>
+
+<h3>8.2 GET /api/races（レース一覧）</h3>
+<table>
+  <tr><th>曜日</th><th>返却範囲</th></tr>
+  <tr><td>土曜</td><td>当日（土）〜翌日（日）の2日間、G1/G2のみ</td></tr>
+  <tr><td>日曜</td><td>当日（日）のみ、G1/G2のみ</td></tr>
+  <tr><td>平日</td><td>次の土日の2日間、G1/G2のみ</td></tr>
+</table>
+<pre>
+レスポンス: {
+  races: [{id, name, date, venue, grade, surface, distance, entries: [...]}],
+  targetDate: ISO文字列
+}
+</pre>
+
+<h3>8.3 POST /api/races（レース手動登録）</h3>
+<pre>
+リクエスト: {name, date, venue, grade, surface, distance}
+処理: 同名・同年レースが存在すれば update、なければ create
+レスポンス: {race: {...}, action: "created" | "updated"}
+</pre>
+
+<h3>8.4 GET /api/results（精度統計・照合用レース一覧）</h3>
+<pre>
+レスポンス: {
+  races: [予想済みかつ結果未入力の直近10件],
+  stats: {
+    total: 45,               // 照合済み総レース数
+    accuracy: 65.8,          // 通算的中率（%）
+    completeHits: 28,        // 1着・2着とも的中
+    halfHits: 9,             // いずれか一方的中
+    misses: 8,               // 両方外れ
+    rankHits: {1: {attempts, hits}, ...},  // 順位別的中数
+    buckets: {high: {...}, mid: {...}, low: {...}},  // 連対率帯別
+    missExamples: [...]       // 外れ事例サンプル
+  }
+}
+</pre>
+
+<h3>8.5 POST /api/results（結果入力・自動学習）</h3>
+<pre>
+リクエスト: {raceId, first: "馬名1", second: "馬名2"}
+処理:
+  1. Prediction と RaceResult を照合
+  2. 的中判定（completeHit / halfHit / miss）
+  3. autoLearnFromNewResult() を呼び出し
+  4. 学習結果をレスポンスに含める
+
+レスポンス: {
+  hitCount: 2 | 1 | 0,
+  accuracy: 100 | 50 | 0,
+  missInfo: "1着「X」✓ 予想内 / 2着「Y」✗ 予想外",
+  patternAnalysis: "... 自動学習: 馬データ2頭更新・因子重み最適化 (v24 通算精度68.5%)",
+  algorithmChange: "...",
+  localLearn: {horsesUpdated, weightsUpdated, newVersion, localAccuracy}
+}
+</pre>
+
+<h3>8.6 POST /api/reanalyze（HorseStat完全再構築）</h3>
+<pre>
+処理:
+  1. 全 RaceResult から buildHorseStatsFromResults() を実行
+  2. g1/g2/g3Races/Places, recentForm, recentGrades を全件集計
+  3. HorseStat テーブルを全削除 → 再作成
+  4. Claude API があれば全分析済みレースから予想ルールを精緻化
+  5. AlgorithmConfig を新バージョンで保存
+
+レスポンス: {horsesSaved, horseStatCount, totalRaces, analyzedRaces, refinedRules, summary}
+
+注意: freshStats.length > 0 の確認後にのみ deleteMany を実行（データ消失防止）
+</pre>
+
+<h3>8.7 POST /api/learn（Claude学習）</h3>
+<pre>
+処理: 未分析レース3件を Claude API で分析 → AlgorithmConfig 更新 → HorseStat更新
+入力: なし
+レスポンス: 学習進捗情報
+
+注意: ANTHROPIC_API_KEY が必要（解約後は使用不可）
+</pre>
+
+<h3>8.8 POST /api/fetch-weights（馬体重自動取得）</h3>
+<pre>
+maxDuration: 60秒
+リクエスト: {raceId}
+処理:
+  1. findNetkeibaRaceId で race_id を取得
+  2. shutuba.html をスクレイピングして馬体重・増減を取得
+  3. 馬名ベースで Results を返す
+
+レスポンス: {
+  results: {"馬名": {weight: 480, weightChange: +5}, ...},
+  fetchedCount: 14,
+  totalCount: 17,
+  message: "X頭中Y頭の馬体重を取得しました"
+}
+</pre>
+
+<h3>8.9 POST /api/fetch-schedule（レース日程自動取得）</h3>
+<pre>
+処理:
+  1. 当週〜12週先の土日を走査
+  2. netkeiba race_list から G1/G2/G3 のレースIDを収集
+  3. DB に upsert（同名・同年なら update）
+
+レスポンス: {message, added, updated, total, races: [{name, date, grade, venue}]}
+</pre>
+
+<h3>8.10 POST /api/verify（出走馬検証・登録）</h3>
+<pre>
+処理:
+  1. 週末G1/G2レースの shutuba.html から出走馬を取得
+  2. RaceEntry として DB に登録
+  3. 血統情報（父・母等）を fetch-pedigree で補完
+
+注意: Claude API を使用して出走馬情報を検証する場合もある
+</pre>
+
+<h3>8.11 GET/DELETE /api/horses（馬データ管理）</h3>
+<pre>
+GET: HorseStat一覧（ページネーション・検索対応）
+  クエリパラメータ: page, limit, search
+DELETE: 指定馬名の HorseStat を削除
+</pre>
+
+<hr/>
+
+<h2>9. フロントエンド設計</h2>
+
+<h3>9.1 ファイル構成</h3>
+<table>
+  <tr><th>ファイルパス</th><th>役割</th></tr>
+  <tr><td>src/app/page.tsx</td><td>メイン画面（シングルページ、約3000行）</td></tr>
+  <tr><td>src/app/layout.tsx</td><td>共通レイアウト（ダークテーマ設定）</td></tr>
+  <tr><td>src/app/globals.css</td><td>グローバルスタイル（Tailwind + カスタムアニメーション）</td></tr>
+  <tr><td>src/lib/scorer.ts</td><td>スコアリングエンジン</td></tr>
+  <tr><td>src/lib/horseStats.ts</td><td>HorseStat構築ロジック</td></tr>
+  <tr><td>src/lib/localAutoLearn.ts</td><td>自己学習ロジック</td></tr>
+  <tr><td>src/lib/netkeibaRaceId.ts</td><td>netkeiba連携</td></tr>
+  <tr><td>src/lib/ai.ts</td><td>Claude API呼び出しラッパー</td></tr>
+  <tr><td>src/lib/db.ts</td><td>Prismaクライアントシングルトン</td></tr>
+</table>
+
+<h3>9.2 主要コンポーネント</h3>
+<table>
+  <tr><th>コンポーネント名</th><th>場所</th><th>役割</th></tr>
+  <tr><td>Spinner</td><td>page.tsx 内定義</td><td>ローディングアニメーション（インラインスタイルでサイズ指定）</td></tr>
+  <tr><td>PlaceRateBar</td><td>page.tsx 内定義</td><td>連対率の横棒グラフ（色: 65%以上=緑, 50%以上=黄, 35%以上=橙, その他=青）</td></tr>
+  <tr><td>Home（default export）</td><td>page.tsx</td><td>アプリ全体のメインコンポーネント</td></tr>
+</table>
+
+<h3>9.3 主要な useState 変数</h3>
+<table>
+  <tr><th>変数名</th><th>型</th><th>用途</th></tr>
+  <tr><td>races</td><td>Race[]</td><td>週末レース一覧</td></tr>
+  <tr><td>selectedRace</td><td>Race | null</td><td>選択中のレース</td></tr>
+  <tr><td>predictions</td><td>Prediction[]</td><td>予想結果（Top 7）</td></tr>
+  <tr><td>predictionMode</td><td>'ai' | 'local' | null</td><td>予想モード表示</td></tr>
+  <tr><td>analysis</td><td>string</td><td>予想コメント</td></tr>
+  <tr><td>horseWeightInputs</td><td>Record&lt;string, {weight, weightChange}&gt;</td><td>馬体重手入力値</td></tr>
+  <tr><td>horseDetailInputs</td><td>Record&lt;string, {lastThreeFurlong, runningStyle}&gt;</td><td>調教・脚質入力値</td></tr>
+  <tr><td>trackCondition</td><td>string</td><td>馬場状態セレクタ値</td></tr>
+  <tr><td>learningStatus</td><td>LearningStatus</td><td>学習進捗（version, accuracy, analyzedCount）</td></tr>
+  <tr><td>resultInputs</td><td>Record&lt;raceId, {first, second}&gt;</td><td>結果入力（1着・2着）</td></tr>
+  <tr><td>resultFeedback</td><td>Record&lt;raceId, ResultFeedback&gt;</td><td>照合フィードバック表示</td></tr>
+  <tr><td>horseStatCount</td><td>number</td><td>蓄積馬数（ローカルモード判定に使用）</td></tr>
+  <tr><td>expandedCard</td><td>number | null</td><td>詳細表示中の予想カードのindex</td></tr>
+</table>
+
+<h3>9.4 画面構成（画面遷移なし、シングルページ）</h3>
+<pre>
+ヘッダー
+  └─ アプリ名・蓄積馬数・学習バージョン・精度
+レース一覧画面（showRaceDetail = false）
+  ├─ 日付見出し（土曜は「X月Y日(土)〜Z日(日)」、日曜は「X月Y日(日)」）
+  ├─ 日程取得ボタン（netkeiba自動取得）
+  └─ レースカード一覧（クリックで詳細へ）
+レース詳細画面（showRaceDetail = true）
+  ├─ レース情報（グレード・競馬場・馬場・距離・出走馬一覧）
+  ├─ 馬体重入力フォーム（折りたたみ）
+  │   ├─ netkeiba自動取得ボタン
+  │   └─ 馬ごとの体重(kg) + 前走比(text入力)
+  ├─ 調教・脚質入力フォーム（折りたたみ）
+  │   ├─ netkeiba自動取得ボタン
+  │   └─ 馬ごとの上がり3F + 脚質セレクタ
+  ├─ 馬場状態セレクタ（良/稍重/重/不良）
+  ├─ 予想実行ボタン
+  └─ 予想結果（Top 7のカード）
+      ├─ 順位バッジ（1st〜7th、色分け）
+      ├─ 馬番・馬名・連対率バー
+      └─ 詳細（展開）: 近走成績・距離適性・コース実績・騎手評価・理由
+結果照合パネル
+  ├─ 過去予想レース一覧
+  └─ 1着・2着入力 → 自動学習フィードバック表示
+学習管理パネル
+  ├─ 出走馬登録（検証）ボタン
+  ├─ Claude学習ボタン
+  ├─ 全件学習ボタン
+  └─ HorseStat再構築ボタン
+馬データ管理パネル
+  ├─ 馬一覧（検索・ページネーション）
+  └─ 馬データ削除
+</pre>
+
+<h3>9.5 実装上の注意点</h3>
+<table>
+  <tr><th>事項</th><th>詳細</th></tr>
+  <tr><td>Tailwind動的クラス</td><td>スピナーのサイズ等、動的値はインラインスタイルを使用（JITで認識されないため）</td></tr>
+  <tr><td>Prisma削除</td><td>deleteではなくdeleteManyを使用（Record not foundバグ回避）</td></tr>
+  <tr><td>Map.forEach</td><td>for...of Map は downlevelIteration エラーになるためMap.forEachを使用</td></tr>
+  <tr><td>weightChange入力</td><td>type="text"（type="number"は"+10"を空欄表示するブラウザがある）</td></tr>
+  <tr><td>max_tokens</td><td>learn=4096, predict=2048, verify/reanalyze/results=2000（タイムアウト防止）</td></tr>
+</table>
+
+<hr/>
+
+<h2>10. 主要定数・マスタデータ</h2>
+
+<h3>10.1 騎手ランク（JOCKEY_RANKS）</h3>
+<table>
+  <tr><th>ランク（ポイント）</th><th>騎手名</th></tr>
+  <tr><td>14（最上位）</td><td>C.ルメール / ルメール</td></tr>
+  <tr><td>10（S級）</td><td>武豊, 川田将雅, 横山武史</td></tr>
+  <tr><td>7（A+級）</td><td>坂井瑠星, 岩田望来, 松山弘平, 戸崎圭太, 池添謙一, 北村友一, M.デムーロ / デムーロ, 菅原明良, 福永祐一</td></tr>
+  <tr><td>4（A級）</td><td>浜中俊, 田辺裕信, 丸山元気, 幸英明, 藤岡佑介, 西村淳也, 鮫島克駿, 永野猛蔵, 三浦皇成, 岩田康誠, 蛯名正義, 内田博幸, 柴田善臣, 横山典弘, 津村明秀, 吉田隼人, 藤岡康太</td></tr>
+  <tr><td>3（B+級）</td><td>石川裕紀人, 富田暁, 団野大成, 角田大和, 斎藤新, 武藤雅</td></tr>
+  <tr><td>2（B級）</td><td>岸宏樹</td></tr>
+</table>
+
+<h3>10.2 調教師ランク（TRAINER_RANKS）</h3>
+<table>
+  <tr><th>ランク（ポイント）</th><th>調教師名</th></tr>
+  <tr><td>10（S+級）</td><td>国枝栄, 手塚貴久</td></tr>
+  <tr><td>8（S級）</td><td>矢作芳人, 友道康夫, 木村哲也, 堀宣行, 藤原英昭, 中内田充正</td></tr>
+  <tr><td>5（A+級）</td><td>池江泰寿, 須貝尚介, 高野友和, 斉藤崇史, 大久保龍志, 音無秀孝, 安田隆行, 中竹和也, 吉田直弘, 田中博康, 石橋守, 西村真幸</td></tr>
+  <tr><td>3（A級）</td><td>角居勝彦, 石坂正, 平野雄次, 清水久詞, 辻野泰之, 昆貢, 加藤士津八, 奥村武, 萩原清, 橋口弘次郎, 松田博資</td></tr>
+</table>
+
+<h3>10.3 血統辞典（SIRE_TRAITS）主要種牡馬</h3>
+<table>
+  <tr><th>種牡馬名</th><th>距離適性</th><th>馬場</th><th>Pts</th></tr>
+  <tr><td>ディープインパクト</td><td>long（2400m+）</td><td>芝</td><td>4</td></tr>
+  <tr><td>ハーツクライ</td><td>long</td><td>芝</td><td>4</td></tr>
+  <tr><td>エピファネイア</td><td>middle</td><td>芝</td><td>4</td></tr>
+  <tr><td>ロードカナロア</td><td>mile</td><td>芝</td><td>4</td></tr>
+  <tr><td>クロフネ</td><td>middle</td><td>ダート</td><td>5</td></tr>
+  <tr><td>オルフェーヴル</td><td>long</td><td>芝</td><td>3</td></tr>
+  <tr><td>キングカメハメハ</td><td>middle</td><td>any</td><td>3</td></tr>
+  <tr><td>ドゥラメンテ</td><td>middle</td><td>芝</td><td>3</td></tr>
+  <tr><td>キタサンブラック</td><td>middle</td><td>芝</td><td>3</td></tr>
+  <tr><td colspan="4">（他にサウスヴィグラス/スクリーンヒーロー/モーリス/キズナ/リオンディーズ等、合計20種牡馬）</td></tr>
+</table>
+<p>血統重み係数: 父×1.0, 母×0.8, 父父×0.45, 父母×0.35, 母父×0.45, 母母×0.3</p>
+
+<h3>10.4 前哨戦マッピング（PREP_RACES）</h3>
+<table>
+  <tr><th>G1レース名</th><th>前哨戦リスト</th></tr>
+  <tr><td>日本ダービー</td><td>皐月賞, NHKマイルカップ, 青葉賞</td></tr>
+  <tr><td>菊花賞</td><td>神戸新聞杯, セントライト記念, 皐月賞</td></tr>
+  <tr><td>オークス / 優駿牝馬</td><td>桜花賞, フローラステークス</td></tr>
+  <tr><td>天皇賞（春）</td><td>阪神大賞典, 日経賞, AJCC, 有馬記念</td></tr>
+  <tr><td>宝塚記念</td><td>大阪杯, 天皇賞（春）</td></tr>
+  <tr><td>天皇賞（秋）</td><td>毎日王冠, オールカマー, 札幌記念</td></tr>
+  <tr><td>有馬記念</td><td>ジャパンカップ, 天皇賞（秋）, 宝塚記念</td></tr>
+  <tr><td>ジャパンカップ</td><td>天皇賞（秋）, 宝塚記念</td></tr>
+  <tr><td>安田記念</td><td>ヴィクトリアマイル, NHKマイルカップ</td></tr>
+  <tr><td>ヴィクトリアマイル</td><td>阪神牝馬ステークス, 中山牝馬ステークス, 桜花賞</td></tr>
+  <tr><td>エリザベス女王杯</td><td>府中牝馬ステークス, 秋華賞, オークス</td></tr>
+  <tr><td>秋華賞</td><td>オークス, ローズステークス, 紫苑ステークス</td></tr>
+  <tr><td>スプリンターズS</td><td>キーンランドカップ, セントウルステークス, 高松宮記念</td></tr>
+  <tr><td>高松宮記念</td><td>シルクロードステークス, オーシャンステークス</td></tr>
+  <tr><td>マイルCS</td><td>スワンステークス, 富士ステークス, 安田記念</td></tr>
+  <tr><td>フェブラリーS</td><td>東海ステークス, 根岸ステークス, チャンピオンズカップ</td></tr>
+  <tr><td>チャンピオンズC</td><td>JBCクラシック, みやこステークス, シリウスステークス</td></tr>
+  <tr><td>NHKマイルカップ</td><td>アーリントンカップ, ニュージーランドトロフィー, 桜花賞</td></tr>
+  <tr><td>桜花賞</td><td>チューリップ賞, フィリーズレビュー</td></tr>
+  <tr><td>皐月賞</td><td>弥生賞ディープインパクト記念, スプリングステークス, 共同通信杯, 弥生賞</td></tr>
+  <tr><td>大阪杯</td><td>金鯱賞, 中山記念, 京都記念</td></tr>
+</table>
+
+<h3>10.5 競馬場コース特性（COURSE_FEATURES）</h3>
+<table>
+  <tr><th>競馬場</th><th>傾斜</th><th>方向</th><th>最終直線(m)</th><th>形状</th></tr>
+  <tr><td>東京</td><td>mild</td><td>左回り</td><td>525</td><td>wide</td></tr>
+  <tr><td>中山</td><td>steep</td><td>右回り</td><td>310</td><td>tight</td></tr>
+  <tr><td>阪神</td><td>steep</td><td>右回り</td><td>356</td><td>wide</td></tr>
+  <tr><td>京都</td><td>mild</td><td>右回り</td><td>404</td><td>wide</td></tr>
+  <tr><td>中京</td><td>mild</td><td>左回り</td><td>412</td><td>wide</td></tr>
+  <tr><td>新潟</td><td>flat</td><td>左回り</td><td>659</td><td>wide</td></tr>
+  <tr><td>函館</td><td>flat</td><td>右回り</td><td>262</td><td>tight</td></tr>
+  <tr><td>札幌</td><td>flat</td><td>右回り</td><td>266</td><td>tight</td></tr>
+  <tr><td>小倉</td><td>flat</td><td>右回り</td><td>293</td><td>tight</td></tr>
+  <tr><td>福島</td><td>flat</td><td>右回り</td><td>292</td><td>tight</td></tr>
+</table>
+
+<h3>10.6 グレード別フォーム品質係数</h3>
+<pre>
+GRADE_FORM_FACTORS = { G1: 2.0, G2: 1.5, G3: 1.2 }
+// adjustedPos = rawPos / gradeFactor
+// G1優勝(1着) → 0.5 として評価（G3優勝の0.833より高く評価）
+</pre>
+
+<hr/>
+
+<h2>11. 移植手順（他マシンへの導入）</h2>
+
+<h3>11.1 事前準備（新マシン）</h3>
+<ol>
+  <li>Node.js 20以上をインストール（<a href="https://nodejs.org/">nodejs.org</a>）</li>
+  <li>PostgreSQL 18をインストール（<a href="https://www.postgresql.org/download/">postgresql.org</a>）</li>
+  <li>psqlで接続し <code>CREATE DATABASE keiba;</code> を実行</li>
+  <li>GitHubからリポジトリをclone:<br>
+    <code>git clone https://github.com/yutaka-taka/todo-app -b keiba C:\keiba</code></li>
+</ol>
+
+<h3>11.2 環境変数の設定</h3>
+<pre>
+# C:\keiba\.env を作成
+DATABASE_URL=postgresql://postgres:PGPASSWORD@localhost:5432/keiba
+
+# C:\keiba\.env.local を作成（Claude API使用時のみ）
+DATABASE_URL=postgresql://postgres:PGPASSWORD@localhost:5432/keiba
+ANTHROPIC_API_KEY=sk-ant-api03-XXXXXXXX
+</pre>
+
+<h3>11.3 依存パッケージとDBセットアップ</h3>
+<pre>
+cd C:\keiba
+npm install          # 依存ライブラリのインストール
+npx prisma db push  # スキーマをDBに適用
+npm run build       # アプリをビルド
+</pre>
+
+<h3>11.4 データ移行（旧マシンから）</h3>
+<p>全DBデータをエクスポート・インポートする手順：</p>
+<pre>
+【旧マシンで実行】
+pg_dump -U postgres keiba -F c -f keiba_backup.dump
+# keiba_backup.dump を新マシンへコピー
+
+【新マシンで実行】
+pg_restore -U postgres -d keiba -F c keiba_backup.dump
+</pre>
+<p class="note">HorseStat（779頭）・Race（6745件）・RaceResult（16321件）が含まれる。このデータが精度78%の根拠のため、必ずバックアップして移行する。</p>
+
+<h3>11.5 アプリ起動確認</h3>
+<pre>
+npm run start       # 本番サーバー起動
+# ブラウザで http://localhost:3000 を開く
+# 「蓄積馬数: 779頭」「v342」等が表示されれば移植成功
+</pre>
+
+<h3>11.6 起動バッチファイルの作成（Windows）</h3>
+<pre>
+# C:\keiba\start.bat として保存
+@echo off
+cd /d C:\keiba
+npm run start
+pause
+</pre>
+<p>デスクトップにショートカットを作成して使用する。</p>
+
+<h3>11.7 初回データ確認チェックリスト</h3>
+<table>
+  <tr><th>確認項目</th><th>確認方法</th><th>期待値</th></tr>
+  <tr><td>HorseStat件数</td><td>アプリヘッダーの蓄積馬数</td><td>779頭以上</td></tr>
+  <tr><td>ローカルモード</td><td>予想実行 → モードバッジ</td><td>「🤖 API不要」表示</td></tr>
+  <tr><td>レース表示</td><td>トップ画面</td><td>週末G1/G2レース表示</td></tr>
+  <tr><td>DB接続</td><td>psql -U postgres -d keiba -c "SELECT count(*) FROM "HorseStat";"</td><td>779以上</td></tr>
+</table>
+
+<hr/>
+
+<p style="text-align:center; color:#888; font-size:9pt; margin-top:30px;">
+  本書は C:\keiba（Gitブランチ: keiba, commit: 3f69bcb）時点の実装を元に作成。<br>
+  2026年5月6日 作成
+</p>
+
+</body>
+</html>
