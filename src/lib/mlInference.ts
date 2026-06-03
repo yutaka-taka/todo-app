@@ -5,6 +5,7 @@
  */
 import path from 'path'
 import fs from 'fs'
+import { rawScoresToWinProbs, top2Probs } from './finishOrder'
 
 // 既定は ml/models。ML_MODEL_DIR で別ディレクトリを指定可（候補モデルのバックテスト比較用）。
 const MODEL_DIR  = process.env.ML_MODEL_DIR
@@ -16,11 +17,14 @@ const META_PATH  = path.join(MODEL_DIR, 'meta.json')
 export interface MLMeta {
   feature_cols: string[]
   best_iteration: number
-  test_auc: number
+  test_auc?: number
   hit1_rate: number
   hit2_rate: number
   trained_at: string
   onnx_failed?: string
+  // ① Learning-to-Rank モデルの場合 'lambdarank'。serving で softmax→Harville 変換を行う。
+  objective?: string
+  harville_gamma?: number
 }
 
 export interface MLFeatureVector {
@@ -141,11 +145,22 @@ export async function predictML(features: MLFeatureVector[]): Promise<number[] |
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results = await (session as any).run({ input: tensor })
 
-    // LightGBM ONNX: output_probability shape は [N, 2]
+    // 二値分類 ONNX は output_probability [N,2]、ランカー(lambdarank)は 'variable' [N,1] の生スコア。
     const probKey = Object.keys(results).find((k: string) => k.includes('probability') || k.includes('prob')) ?? Object.keys(results)[0]
     const probTensor = results[probKey]
     const data = probTensor.data as Float32Array
     const dim = data.length / features.length
+
+    // ① Learning-to-Rank: レース内 softmax→Harville+γ補正で連対(top2)確率(0..1)へ変換。
+    // predictML は1レースの全出走馬で呼ばれる前提なので softmax はレース内正規化になる。
+    if (meta.objective === 'lambdarank') {
+      const scores: number[] = []
+      for (let i = 0; i < features.length; i++) scores.push(data[i])
+      const gamma = Number(process.env.HARVILLE_GAMMA ?? meta.harville_gamma ?? 0.81)
+      const win = rawScoresToWinProbs(scores, Number(process.env.RANK_TEMP ?? 1))
+      return top2Probs(win, gamma)
+    }
+
     const probs: number[] = []
     for (let i = 0; i < features.length; i++) {
       probs.push(dim === 2 ? data[i * 2 + 1] : data[i])

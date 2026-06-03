@@ -75,12 +75,104 @@ def eval_hit_rate(df, pred_col='pred', top_n=5):
     return hit1 / races_total, hit2 / races_total
 
 
+def race_level_time_split(df, valid_ratio=0.15, test_ratio=0.20):
+    """レース単位の時系列分割（各レースの全行を同一 split へ＝ランカーの group 用にリーク無し）"""
+    race_dates = df.groupby('race_id')['date'].min().sort_values()
+    races = race_dates.index.tolist()
+    n = len(races)
+    test_start = int(n * (1 - test_ratio))
+    valid_start = int(n * (1 - test_ratio - valid_ratio))
+    tr = set(races[:valid_start]); va = set(races[valid_start:test_start]); te = set(races[test_start:])
+    return (df[df['race_id'].isin(tr)].copy(),
+            df[df['race_id'].isin(va)].copy(),
+            df[df['race_id'].isin(te)].copy())
+
+
+def _grouped(df, feature_cols):
+    """race_id で連続化し X,y,group を返す（LGBMRanker は group 連続が前提）"""
+    d = df.sort_values('race_id')
+    sizes = d.groupby('race_id', sort=True).size().tolist()
+    return d, d[feature_cols], d['y'], sizes
+
+
+def train_ranker(df, feature_cols, args):
+    """① Learning-to-Rank（LightGBM lambdarank）候補モデル。連対(top2)=二値 relevance を
+    レース内順位最適化(nDCG)。serving 側(mlInference.ts)が softmax→Harville でこのスコアを
+    連対確率へ変換する。現行の二値分類モデルとは別ディレクトリに出力し diag で比較する。"""
+    from lightgbm import LGBMRanker
+    train_df, valid_df, test_df = race_level_time_split(df)
+    for d in (train_df, valid_df, test_df):
+        for col in feature_cols:
+            d[col] = d[col].fillna(0)
+    print(f'[RANK] train={len(train_df)} / valid={len(valid_df)} / test={len(test_df)} レース'
+          f'（{train_df["race_id"].nunique()}/{valid_df["race_id"].nunique()}/{test_df["race_id"].nunique()}）')
+
+    _, Xtr, ytr, gtr = _grouped(train_df, feature_cols)
+    _, Xva, yva, gva = _grouped(valid_df, feature_cols)
+
+    ranker = LGBMRanker(
+        objective='lambdarank', metric='ndcg',
+        learning_rate=0.05, num_leaves=63, min_child_samples=100,
+        colsample_bytree=0.85, subsample=0.85, subsample_freq=5,
+        reg_alpha=0.1, reg_lambda=0.1, verbose=-1, random_state=42,
+        n_estimators=2000, label_gain=[0, 1], lambdarank_truncation_level=6,
+    )
+    ranker.fit(
+        Xtr, ytr, group=gtr,
+        eval_set=[(Xva, yva)], eval_group=[gva], eval_at=[1, 2, 5],
+        callbacks=[lgb.early_stopping(120, verbose=False), lgb.log_evaluation(50)],
+    )
+
+    test_df = test_df.copy()
+    test_df['pred'] = ranker.predict(test_df[feature_cols])
+    hit1, hit2 = eval_hit_rate(test_df)
+    print(f'\n[RANK] TEST 5頭中1+ヒット: {hit1*100:.1f}%  / 5頭中2 ヒット: {hit2*100:.1f}%')
+
+    booster = ranker.booster_
+    imp = pd.DataFrame({'feature': feature_cols, 'importance': booster.feature_importance(importance_type='gain')})
+    print('\n[RANK] 特徴量重要度 Top10:')
+    print(imp.sort_values('importance', ascending=False).head(10).to_string(index=False))
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    booster.save_model(os.path.join(args.out_dir, 'model.txt'))
+    gamma = float(os.environ.get('HARVILLE_GAMMA', 0.9))  # G1診断の掃引で最良（0.81→0.9）
+    meta = {
+        'feature_cols': feature_cols, 'objective': 'lambdarank', 'harville_gamma': gamma,
+        'best_iteration': ranker.best_iteration_, 'hit1_rate': hit1, 'hit2_rate': hit2,
+        'trained_at': pd.Timestamp.now().isoformat(),
+        'n_train': len(train_df), 'n_test': len(test_df),
+    }
+    with open(os.path.join(args.out_dir, 'meta.json'), 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    # ONNX: ランカーは Booster を直接変換（回帰型 単一スコア出力 [N,1]）
+    try:
+        import onnxmltools
+        from onnxmltools.convert.common.data_types import FloatTensorType as OmtFloat
+        onnx_model = onnxmltools.convert_lightgbm(
+            booster, initial_types=[('input', OmtFloat([None, len(feature_cols)]))],
+            target_opset=15)
+        with open(os.path.join(args.out_dir, 'model.onnx'), 'wb') as f:
+            f.write(onnx_model.SerializeToString())
+        print(f'[RANK] ONNX保存: {os.path.join(args.out_dir, "model.onnx")}')
+    except Exception as e:
+        print(f'[RANK] ONNX変換失敗: {e}')
+        meta['onnx_failed'] = str(e)
+        with open(os.path.join(args.out_dir, 'meta.json'), 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+
 def train(args):
     df = pd.read_parquet(args.dataset)
     print(f'データ: {len(df)} 行')
 
     feature_cols = [c for c in FEATURE_COLS if c in df.columns]
     print(f'特徴量: {len(feature_cols)} 次元')
+
+    # ① Learning-to-Rank モード（RANK=1）。現行の二値分類パスは無傷のまま候補を別出力。
+    if os.environ.get('RANK'):
+        print('[RANK] lambdarank 候補モデルを訓練します')
+        return train_ranker(df, feature_cols, args)
 
     train_df, valid_df, test_df = time_split(df)
     print(f'train={len(train_df)} / valid={len(valid_df)} / test={len(test_df)}')
