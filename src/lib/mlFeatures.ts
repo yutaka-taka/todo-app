@@ -113,6 +113,30 @@ export function buildMLFeatures(
   const sireSurfRate = apt?.sireSurf?.[sire]?.[race.surface] ?? placeRate
   const bmsDistRate  = apt?.bmsDist?.[bms]?.[dbin] ?? placeRate
 
+  // --- ローテ（ステップレース）特徴: build_dataset.py agg_rotation と一致 ---
+  // 直近5走窓(recentForm/recentGrades/recentPops, 最新が先頭)＋全期間グレード集計から算出。
+  const recForm = parseForm(stat?.recentForm, 5)            // 着順（0=無し）
+  const recGrades = (stat?.recentGrades ?? '').split('-')   // "G1-G3-..."（最新が先頭）
+  const recPops = parseForm(stat?.recentPops, 5)            // 人気（0=無し）
+  const prevGradeRank = recGrades[0] ? (GRADE_RANK[recGrades[0]] ?? 1) : 1
+  const gradedN = (stat?.g1Races ?? 0) + (stat?.g2Races ?? 0) + (stat?.g3Races ?? 0)
+  const gradedP = (stat?.g1Places ?? 0) + (stat?.g2Places ?? 0) + (stat?.g3Places ?? 0)
+  const gradedPlaceRate = gradedN > 0 ? gradedP / gradedN : 0.0
+  let bestGradedFinish = 18
+  let lastGradedGap = 0
+  let lastGradedSeen = false
+  for (let i = 0; i < 5; i++) {
+    const g = recGrades[i]
+    if (!g || (GRADE_RANK[g] ?? 1) < 2) continue       // G3以上のみ
+    const pos = recForm[i] > 0 ? recForm[i] : 99
+    if (pos < bestGradedFinish) bestGradedFinish = pos
+    if (!lastGradedSeen) {                               // 最新の重賞（先頭側）
+      lastGradedSeen = true
+      const pop = recPops[i]
+      if (pop > 0) lastGradedGap = Math.max(-17, Math.min(17, pop - pos))
+    }
+  }
+
   // 当日情報(odds/popularity/horse_weight/weight_change/当日上がり3F)は数日前予想では
   // 欠損するため特徴量に使わない。馬体重は過去平均、人気・上がり3F・スピードは過去走集計を使用。
   return {
@@ -161,5 +185,11 @@ export function buildMLFeatures(
     sire_dist_rate: sireDistRate,
     sire_surf_rate: sireSurfRate,
     bms_dist_rate:  bmsDistRate,
+
+    // ローテ特徴（USE_ROTATION で訓練したモデルのみ使用。それ以外では meta 駆動で無視される）
+    prev_grade_rank: prevGradeRank,
+    graded_place_rate: gradedPlaceRate,
+    best_graded_finish: bestGradedFinish,
+    last_graded_gap: lastGradedGap,
   }
 }

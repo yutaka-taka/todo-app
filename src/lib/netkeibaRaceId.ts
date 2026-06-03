@@ -20,6 +20,34 @@ function nearestSaturday(d: Date): Date {
   return addDays(d, 6 - dow)
 }
 
+// RaceListDayWrap ブロックを div ネストカウントで切り出す
+function splitDayWrapBlocks(html: string): string[] {
+  const blocks: string[] = []
+  const openRegex = /<div class="RaceListDayWrap"[^>]*>/g
+  let m
+  while ((m = openRegex.exec(html)) !== null) {
+    const start = m.index
+    const openLen = m[0].length
+    let depth = 1
+    let j = start + openLen
+    while (j < html.length && depth > 0) {
+      const nextOpen = html.indexOf('<div', j)
+      const nextClose = html.indexOf('</div>', j)
+      if (nextClose < 0) { j = html.length; break }
+      if (nextOpen >= 0 && nextOpen < nextClose) {
+        depth++
+        j = nextOpen + 4
+      } else {
+        depth--
+        j = nextClose + 6
+      }
+    }
+    blocks.push(html.slice(start, j))
+    openRegex.lastIndex = j
+  }
+  return blocks
+}
+
 // SPスケジュールページからG1クラスレースIDを探す
 // venue: 競馬場名、raceDate: レース日
 export async function findNetkeibaRaceId(venue: string, raceDate: Date): Promise<string | null> {
@@ -28,7 +56,7 @@ export async function findNetkeibaRaceId(venue: string, raceDate: Date): Promise
 
   const sat = nearestSaturday(raceDate)
   const satStr = format(sat, 'yyyyMMdd')
-  const isSaturday = raceDate.getDay() === 6
+  const raceDateStr = format(raceDate, 'yyyyMMdd')
 
   try {
     const res = await fetch(
@@ -38,30 +66,27 @@ export async function findNetkeibaRaceId(venue: string, raceDate: Date): Promise
     if (!res.ok) return null
     const html = await res.text()
 
-    const pattern = /race_id=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/g
-    const candidates: Array<{ raceId: string; dayNum: number; raceNum: number }> = []
+    // 各 RaceListDayWrap ブロックを検査し、data-kaisaidate が raceDate と一致するもののみ採用
+    const candidates: Array<{ raceId: string; raceNum: number }> = []
     const seen = new Set<string>()
-    let m
-    while ((m = pattern.exec(html)) !== null) {
-      const raceId = m[1] + m[2] + m[3] + m[4] + m[5]
-      if (seen.has(raceId) || m[2] !== venueCode) continue
-      seen.add(raceId)
-      candidates.push({ raceId, dayNum: parseInt(m[4]), raceNum: parseInt(m[5]) })
+    for (const block of splitDayWrapBlocks(html)) {
+      const dateM = block.match(/data-kaisaidate="(\d{8})"/)
+      if (!dateM || dateM[1] !== raceDateStr) continue
+
+      const pattern = /race_id=(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/g
+      let m
+      while ((m = pattern.exec(block)) !== null) {
+        const raceId = m[1] + m[2] + m[3] + m[4] + m[5]
+        if (seen.has(raceId) || m[2] !== venueCode) continue
+        seen.add(raceId)
+        candidates.push({ raceId, raceNum: parseInt(m[5]) })
+      }
     }
 
-    const r11r12 = candidates.filter((c) => c.raceNum === 11 || c.raceNum === 12)
-    if (r11r12.length === 0) return null
-    r11r12.sort((a, b) => a.dayNum - b.dayNum)
-    const minDay = r11r12[0].dayNum
-
-    if (isSaturday) {
-      return r11r12.find((c) => c.dayNum === minDay && c.raceNum === 11)?.raceId
-        ?? r11r12.find((c) => c.dayNum === minDay)?.raceId ?? null
-    } else {
-      const sunDay = minDay + 1
-      return r11r12.find((c) => c.dayNum === sunDay && c.raceNum === 11)?.raceId
-        ?? r11r12.find((c) => c.dayNum === sunDay)?.raceId ?? null
-    }
+    if (candidates.length === 0) return null
+    return candidates.find((c) => c.raceNum === 11)?.raceId
+      ?? candidates.find((c) => c.raceNum === 12)?.raceId
+      ?? null
   } catch {
     return null
   }

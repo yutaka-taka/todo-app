@@ -59,6 +59,11 @@ FEATURE_COLS = [
     'best_r3f', 'avg_r3f3', 'avg_recent_pop', 'best_recent_pop',
 ]
 
+# ローテ（ステップレース）特徴: USE_ROTATION=1 の train.py で有効化する opt-in 列。
+# dataset には常に出力し、train 側で採否を切り替える（PEDIGREE_COLS と同じ方式）。
+# 2026東京優駿でバステール(前走皐月賞3着・前々走弥生賞勝ち=重賞好走)を取りこぼした分析より。
+ROTATION_COLS = ['prev_grade_rank', 'graded_place_rate', 'best_graded_finish', 'last_graded_gap']
+
 
 def distance_bin(d):
     if d <= 1400: return 0
@@ -230,9 +235,10 @@ def main():
         if race['hw'] is not None and race['hw'] > 0:
             acc['wsum'] += race['hw']; acc['wcnt'] += 1
         acc['finishes'].append(race['pos'] or 99)
-        # 実力系の prior レコード（時系列順）
+        # 実力系の prior レコード（時系列順）。grade/pos はローテ特徴に使用。
         acc['prs'].append(dict(speedz=race['_speedz'], posratio=race['_posratio'],
-                               r3f=race['r3f'], pop=race['popularity']))
+                               r3f=race['r3f'], pop=race['popularity'],
+                               grade=race['grade'], pos=(race['pos'] or 99)))
         acc['last_date'] = race['date']
         acc['last_pop'] = race['popularity']
 
@@ -270,6 +276,35 @@ def main():
             'best_recent_pop': min(l5pop) if l5pop else DEF_POP,
         }
 
+    def agg_rotation(acc):
+        """ローテ（ステップレース）特徴。serving 側(mlFeatures.ts)が HorseStat から計算できる
+        情報＝『直近5走窓(grade/着順/人気)＋全期間グレード集計』のみで算出し parity を保証する。
+        当日情報を使わず数日前に計算可能（リークなし）。"""
+        # 直近5走（最新が先頭）= recentForm/recentGrades/recentPops と同じ並び
+        recent5 = list(reversed(acc['prs']))[:5]
+        if not recent5:
+            return {'prev_grade_rank': 1, 'graded_place_rate': 0.0,
+                    'best_graded_finish': 18, 'last_graded_gap': 0}
+        prev_grade_rank = GRADE_RANK.get(recent5[0]['grade'], 1)
+        # 全期間グレード(G1/G2/G3)連対率（HorseStat の g*Races/g*Places と一致）
+        gn = acc['g1n'] + acc['g2n'] + acc['g3n']
+        gp = acc['g1p'] + acc['g2p'] + acc['g3p']
+        graded_place_rate = (gp / gn) if gn > 0 else 0.0
+        # 直近5走内の重賞での最高着順 / 最新重賞の「人気-着順」健闘度
+        graded5 = [p for p in recent5 if GRADE_RANK.get(p['grade'], 1) >= 2]
+        best_graded_finish = min((p['pos'] for p in graded5), default=18)
+        last_graded = graded5[0] if graded5 else None  # recent5 は最新が先頭
+        if last_graded and last_graded['pop']:
+            gap = last_graded['pop'] - (last_graded['pos'] or 99)
+        else:
+            gap = 0
+        return {
+            'prev_grade_rank': prev_grade_rank,
+            'graded_place_rate': graded_place_rate,
+            'best_graded_finish': best_graded_finish,
+            'last_graded_gap': max(-17, min(17, gap)),
+        }
+
     def emit(acc, race):
         n = acc['n']
         place_rate = (acc['places'] / n) if n > 0 else 0.111
@@ -285,6 +320,7 @@ def main():
         avg_hw = (acc['wsum'] / acc['wcnt']) if acc['wcnt'] > 0 else 490.0
         d = race['distance']
         ss = agg_speed_style_pop(acc['prs'])
+        rot = agg_rotation(acc)
         feat = {
             'grade_rank': GRADE_RANK.get(race['grade'], 1),
             'surface_bin': 1 if race['surface'] == '芝' else 0,
@@ -309,6 +345,7 @@ def main():
             'trainer_rank': TRAINER_RANKS.get(race['trainer'], 3) if race['trainer'] else 3,
             'horse_weight': avg_hw,
             **ss,
+            **rot,
             'sire_dist_rate': race['_sdr'] if race.get('_sdr') is not None else place_rate,
             'sire_surf_rate': race['_ssr'] if race.get('_ssr') is not None else place_rate,
             'bms_dist_rate':  race['_bdr'] if race.get('_bdr') is not None else place_rate,

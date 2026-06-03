@@ -6,7 +6,10 @@
 import path from 'path'
 import fs from 'fs'
 
-const MODEL_DIR  = path.join(process.cwd(), 'ml', 'models')
+// 既定は ml/models。ML_MODEL_DIR で別ディレクトリを指定可（候補モデルのバックテスト比較用）。
+const MODEL_DIR  = process.env.ML_MODEL_DIR
+  ? path.resolve(process.cwd(), process.env.ML_MODEL_DIR)
+  : path.join(process.cwd(), 'ml', 'models')
 const MODEL_PATH = path.join(MODEL_DIR, 'model.onnx')
 const META_PATH  = path.join(MODEL_DIR, 'meta.json')
 
@@ -64,6 +67,11 @@ export interface MLFeatureVector {
   sire_dist_rate: number
   sire_surf_rate: number
   bms_dist_rate: number
+  // ローテ（ステップレース）特徴（USE_ROTATION 訓練時のみモデルが使用）
+  prev_grade_rank: number
+  graded_place_rate: number
+  best_graded_finish: number
+  last_graded_gap: number
   [key: string]: number
 }
 

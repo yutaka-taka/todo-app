@@ -1,5 +1,6 @@
 import type { HorseStat } from '@prisma/client'
 import { getIntervalBin } from './intervalBins'
+import { adjustMlRatesForStamina } from './staminaAdjust'
 
 export interface LocalWeights {
   recentFormMult: number
@@ -118,6 +119,7 @@ export interface ScoredHorse {
   _selectionReason?: 'top1' | 'top2' | 'top3' | 'expected_value' | 'market_gap' | 'fallback'
   _mlRate?: number | null       // ML(ONNX)が出力した連対確率 × 100
   _heuristicRate?: number | null // ヒューリスティックのplaceRate（アンサンブル前）
+  _rotationSignal?: number | null // §B5 ローテ妙味度（重賞で人気以上に好走＝高い）。selectFinalFive 5頭目用
   factors: {
     recentForm: string
     distanceSuitability: string
@@ -284,6 +286,12 @@ function getBloodlineBonus(
 // 旧[65,52,38,28,22,18,15] は実連対率(31/25/20/17/14/13/13)から大幅に過大評価。
 // 表示値が現実に近づくよう調整。
 const RANK_CAPS = [55, 45, 36, 28, 23, 19, 16]
+
+// 「注目の伏兵」枠（top5外・表示専用 recall 層）のチューニング
+const DARK_BOX_SIZE = Number(process.env.DARK_BOX_SIZE ?? 4)            // 伏兵として surface する最大頭数（G1診断: box4で両連対出現88.4%/box5以降は頭打ち）
+const DARK_ML_FLOOR_RATIO = Number(process.env.DARK_ML_FLOOR_RATIO ?? 0.5) // 5番手MLのこの割合以上のML馬のみ伏兵候補（弱小頭数レースでの粗拾い防止）
+const DARK_ROT_CAP = Number(process.env.DARK_ROT_CAP ?? 12)            // ローテ妙味加点の上限（生値）
+const DARK_ROT_WEIGHT = Number(process.env.DARK_ROT_WEIGHT ?? 0.25)   // ローテ妙味の加点係数（ML主軸を崩さない小さめの値）
 
 // ========== グレード別フォーム品質係数 ==========
 // 前走グレードが高いほど同じ着順を高く評価。
@@ -723,6 +731,15 @@ export interface ScoringOptions {
   // mlRateMap: horseName -> ML確率×100 / mlWeight: ML比率(0..1)。
   // これを渡さないと ML は選定に影響しない（旧実装の欠陥）。
   mlBlend?: { mlRateMap: Map<string, number>; mlWeight: number }
+  // 距離延長×脚質スタミナ補正＋少経験馬の縮約を mlRateMap に適用してから合成する。
+  // 617重賞バックテストで G1 Hit@5(1) 92.5%→94.6% を確認し既定採用（staminaAdjust.ts 参照）。
+  staminaAdjust?: boolean
+  // §B5 selectFinalFive の5頭目で「ローテ妙味」枠を有効化する opt-in（既定OFF）。
+  // 617重賞バックテストで Hit を下げると判明したため本番では使わない（検証コード互換のため残置）。
+  rotationPick?: boolean
+  // 「注目の伏兵」表示用 out-param。top5 に漏れたが重賞で人気以上に好走した馬を最大2頭詰める。
+  // 的中率(top5)には一切影響しない純粋な表示用途。
+  darkHorses?: ScoredHorse[]
 }
 
 export function localScoreHorses(
@@ -786,8 +803,12 @@ export function localScoreHorses(
   // 全く効いていなかった。ここで合成して以降の sort→caps→selectFinalFive を ML 主導にする。
   if (options.mlBlend) {
     const mlWeight = Math.max(0, Math.min(1, options.mlBlend.mlWeight))
+    // 選定前にスタミナ補正＋少経験縮約を適用（既定ON。staminaAdjust:false で無効化可）。
+    const mlMap = options.staminaAdjust === false
+      ? options.mlBlend.mlRateMap
+      : adjustMlRatesForStamina(options.mlBlend.mlRateMap, stats, race)
     for (const s of scored) {
-      const ml = options.mlBlend.mlRateMap.get(s.horseName)
+      const ml = mlMap.get(s.horseName)
       if (ml != null) {
         // 表示用デバッグ値は読みやすい範囲にクランプ（ブレンド計算には生値を使用）
         s._heuristicRate = Math.round(Math.min(s.placeRate, 99) * 10) / 10
@@ -842,14 +863,40 @@ export function localScoreHorses(
     placeRate: Math.round(s.placeRate * 10) / 10,
   }))
 
-  if (options.selectionMode !== 'classic') {
-    return selectFinalFive(calibrated)
+  const finalPicks = options.selectionMode !== 'classic'
+    ? selectFinalFive(calibrated, options.rotationPick ?? false)
+    : calibrated.slice(0, 5)
+
+  // 「注目の伏兵」抽出（表示専用・top5の的中率に非干渉）。
+  // 2nd-chance recall層: top5(ブレンド後placeRate上位5)から漏れたが、モデルがほぼ選びかけた
+  // 馬を最大 DARK_BOX_SIZE 頭 surface する。G1自己予想診断で、連対馬の取りこぼしの約6割は
+  // adjusted-ML 上位(3-8位)なのに 10%ヒューリスティック合成・0戦/不安定フォームの既定値で
+  // top5外に押し出されると判明（例: ロマンチックウォリアー安田記念ML3位/カランダガンJC ML4位/
+  // ソウルラッシュ安田記念ML5位）。darkScore で2シグナルのどちらか強い方を拾う:
+  //   darkScore = max(adjusted-ML連対確率%, ローテ妙味度) — MLが高い or 重賞で人気以上好走。
+  // ML が無い経路では _mlRate=null のため従来どおりローテ妙味のみで機能する。
+  if (options.darkHorses) {
+    const pickedNames = new Set(finalPicks.map(p => p.horseName))
+    const fifthRate = calibrated[4]?._mlRate ?? calibrated[4]?.placeRate ?? 0
+    const darks = scored
+      .filter(s => !pickedNames.has(s.horseName))
+      // 伏兵スコア = ML連対確率(主) + ローテ妙味(上限付き加点で従属)。
+      // ローテ値(10-16)はML値(4-13)より大きいため、max だとローテ馬が箱を占有して
+      // ML近接落選の連対馬(ロマンチックウォリアー等)を押し出す。加点方式でMLを主軸に保つ。
+      .map(s => ({ s, score: (s._mlRate ?? 0) + Math.min(s._rotationSignal ?? 0, DARK_ROT_CAP) * DARK_ROT_WEIGHT }))
+      // 近接落選のみ: ML が5番手の概ね半分以上 か、ローテ妙味が明確(>=6)な馬に限定
+      .filter(d => ((d.s._mlRate ?? 0) > 0 && (d.s._mlRate ?? 0) >= fifthRate * DARK_ML_FLOOR_RATIO) || (d.s._rotationSignal ?? 0) >= 6)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, DARK_BOX_SIZE)
+      .map(d => d.s)
+    for (const dh of darks) options.darkHorses.push(dh)
   }
-  return calibrated.slice(0, 5)
+
+  return finalPicks
 }
 
-// Phase 2: 多軸推奨ロジック（鉄板3 + 期待値1 + 市場乖離1）
-function selectFinalFive(scored: ScoredHorse[]): ScoredHorse[] {
+// Phase 2: 多軸推奨ロジック（鉄板3 + 期待値1 + 市場乖離/ローテ妙味1）
+function selectFinalFive(scored: ScoredHorse[], useRotation = false): ScoredHorse[] {
   if (scored.length <= 5) {
     return scored.map((h, i) => ({ ...h, rank: i + 1, _selectionReason: (['top1','top2','top3','fallback','fallback'] as const)[i] ?? 'fallback' }))
   }
@@ -879,19 +926,31 @@ function selectFinalFive(scored: ScoredHorse[]): ScoredHorse[] {
     }
   }
 
-  // 5頭目: placeRate 6-12位 かつ oddsRank との乖離最大（市場の盲点）
-  const candidates = sortedByRate
+  // 5頭目: 「市場の盲点(oddsRank乖離)」と「§B5 ローテ妙味(重賞で人気以上に好走)」を競わせ、
+  // シグナルが強い方を採用する。ローテ妙味馬は予測下位に沈みやすいので候補窓を 4-15位と広く取る。
+  // useRotation=false(既定OFF) なら従来どおり市場の盲点のみ（バックテストで base 比較するため）。
+  const marketCand = sortedByRate
     .slice(5, 12)
     .filter(h => !picked.has(h.horseName))
-    .map(h => {
-      const oddsRank = h._oddsRank ?? 99
-      const predRank = sortedByRate.indexOf(h) + 1
-      return { h, gap: predRank - oddsRank }
-    })
+    .map(h => ({ h, gap: (sortedByRate.indexOf(h) + 1) - (h._oddsRank ?? 99) }))
     .sort((a, b) => b.gap - a.gap)
+  const marketBest = (marketCand.length > 0 && marketCand[0].gap >= 2) ? marketCand[0] : null
 
-  if (candidates.length > 0 && candidates[0].gap >= 2) {
-    result.push({ ...candidates[0].h, _selectionReason: 'market_gap' })
+  let rotationBest: { h: ScoredHorse; sig: number } | null = null
+  if (useRotation) {
+    const rotCand = sortedByRate
+      .slice(3, 15)
+      .filter(h => !picked.has(h.horseName) && (h._rotationSignal ?? 0) > 0)
+      .map(h => ({ h, sig: h._rotationSignal as number }))
+      .sort((a, b) => b.sig - a.sig)
+    // 妙味度が一定以上（G3で人気以上3着級≈3.6 / G1健闘級は二桁）のときのみ採用
+    if (rotCand.length > 0 && rotCand[0].sig >= 6) rotationBest = rotCand[0]
+  }
+
+  if (rotationBest && (!marketBest || rotationBest.sig >= marketBest.gap * 3)) {
+    result.push({ ...rotationBest.h, _selectionReason: 'market_gap' })
+  } else if (marketBest) {
+    result.push({ ...marketBest.h, _selectionReason: 'market_gap' })
   } else {
     for (const h of sortedByRate) {
       if (!picked.has(h.horseName)) { result.push({ ...h, _selectionReason: 'fallback' }); break }
@@ -1458,6 +1517,22 @@ function buildScore(
   const finishGapRaw = getFinishGapBonus(stat.recentForm, (stat as unknown as { recentPops?: string | null }).recentPops)
   const wFinishGap = Math.round(finishGapRaw * (weights.finishGapMult ?? 1.0))
 
+  // §B5 ローテ妙味度: 重賞(G1/G2/G3)で「人気以上に好走」した馬を selectFinalFive 5頭目で拾う。
+  // 直近5走窓で重賞かつ着順<=5、人気-着順>=2(人気以上)を健闘とみなし、重賞グレード×健闘度で加点。
+  // 例: バステール 前走皐月賞(G1) 11番人気3着 → gap=8, finish=3 → 強いシグナル。
+  const rotForm = (stat.recentForm ?? '').split('-').map(Number)
+  const rotGrades = (stat.recentGrades ?? '').split('-')
+  const rotPops = ((stat as unknown as { recentPops?: string | null }).recentPops ?? '').split('-').map(Number)
+  let rotationSignal = 0
+  for (let i = 0; i < Math.min(5, rotGrades.length); i++) {
+    const gr = GRADE_FORM_FACTORS[rotGrades[i]] // G1=2.0/G2=1.5/G3=1.2、重賞のみ定義
+    const pos = rotForm[i]
+    const pop = rotPops[i]
+    if (!gr || !pos || pos > 5 || !pop) continue
+    const gap = pop - pos // 正=人気以上の好走
+    if (gap >= 2) rotationSignal = Math.max(rotationSignal, gr * gap * (i === 0 ? 1.0 : 0.6))
+  }
+
   // §F 会場×馬場×距離複合実績
   const cdData = (stat as unknown as { courseDistData?: StatRecord }).courseDistData ?? {}
   const courseDistRaw = getCourseDistBonus(cdData, race.venue, race.surface, race.distance)
@@ -1493,6 +1568,7 @@ function buildScore(
     weightChange: entry.weightChange ?? null,
     _oddsFloat: entry.oddsFloat ?? null,
     _oddsRank: entry.oddsPopularity ?? null,
+    _rotationSignal: rotationSignal > 0 ? Math.round(rotationSignal * 10) / 10 : null,
     factors: {
       recentForm: recentFormText,
       distanceSuitability,

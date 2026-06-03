@@ -30,6 +30,16 @@ PEDIGREE_COLS = ['sire_dist_rate', 'sire_surf_rate', 'bms_dist_rate']
 if os.environ.get('USE_PEDIGREE'):
     FEATURE_COLS = FEATURE_COLS + PEDIGREE_COLS
 
+# ローテ（ステップレース）特徴。既定ON（NO_ROTATION=1 で無効化）。
+# build_dataset.py の ROTATION_COLS と一致させること（parity）。
+# 重要: 旧版は USE_ROTATION=1 の opt-in だったため、月次自動再訓練(KeibaMLRetrain)が
+# ローテ無しの38特徴モデルで本番(ml/models)を上書きし、検証済みのローテ改善
+# (G1 Hit@5(2) +3.3pt / 768重賞walk-forward)を毎月サイレントに巻き戻していた。
+# 既定ONにして再発防止する。serve側 mlFeatures.ts は常にローテ特徴を生成済み。
+ROTATION_COLS = ['prev_grade_rank', 'graded_place_rate', 'best_graded_finish', 'last_graded_gap']
+if not os.environ.get('NO_ROTATION'):
+    FEATURE_COLS = FEATURE_COLS + ROTATION_COLS
+
 
 def time_split(df, valid_ratio=0.15, test_ratio=0.20):
     """データが少ない場合も動作する割合ベースの時系列分割"""

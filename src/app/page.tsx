@@ -41,6 +41,7 @@ interface Prediction {
   horseWeight?: number | null
   weightChange?: number | null
   _selectionReason?: string
+  _rotationSignal?: number | null
   factors?: PredictionFactor
 }
 
@@ -240,9 +241,14 @@ function PlaceRateBar({ rate }: { rate: number }) {
 export default function Home() {
   const [races, setRaces] = useState<Race[]>([])
   const [targetDate, setTargetDate] = useState<string>('')
+  // 日付入力（カレンダー）。デフォルトは本日。画面リフレッシュ押下でこの日付のレースを表示。
+  const [inputDate, setInputDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'))
+  // 現在表示中の指定日（null = 既定の「今週末」モード）。
+  const [viewDate, setViewDate] = useState<string | null>(null)
   const [selectedRace, setSelectedRace] = useState<Race | null>(null)
   const [showRaceDetail, setShowRaceDetail] = useState(false)
   const [predictions, setPredictions] = useState<Prediction[]>([])
+  const [darkHorses, setDarkHorses] = useState<Prediction[]>([])
   const [analysis, setAnalysis] = useState<string>('')
   const [predictionMode, setPredictionMode] = useState<'ai' | 'local' | null>(null)
   const [expandedCard, setExpandedCard] = useState<number | null>(null)
@@ -394,11 +400,14 @@ export default function Home() {
   } | null>(null)
   const [blindOptimizeError, setBlindOptimizeError] = useState<string | null>(null)
 
-  const fetchRaces = useCallback(async () => {
+  const fetchRaces = useCallback(async (dateOverride?: string) => {
     setLoadingRaces(true)
     setRaceError(null)
     try {
-      const res = await fetch('/api/races')
+      const url = dateOverride
+        ? `/api/races?date=${encodeURIComponent(dateOverride)}`
+        : '/api/races'
+      const res = await fetch(url)
       if (!res.ok) throw new Error('レース情報の取得に失敗しました')
       const data = await res.json()
       setRaces(data.races ?? [])
@@ -409,6 +418,27 @@ export default function Home() {
       setLoadingRaces(false)
     }
   }, [])
+
+  // 入力された日付でレース一覧を再取得（昨日のG1など過去日も閲覧・予想可能に）
+  const handleRefreshByDate = useCallback(() => {
+    setViewDate(inputDate)
+    setShowRaceDetail(false)
+    setSelectedRace(null)
+    setShowHorsesPanel(false)
+    setShowHistoryPanel(false)
+    setShowLearnPanel(false)
+    setScheduleResult(null)
+    fetchRaces(inputDate)
+  }, [inputDate, fetchRaces])
+
+  // 既定の「今週末」表示に戻す
+  const handleClearDate = useCallback(() => {
+    setViewDate(null)
+    setInputDate(format(new Date(), 'yyyy-MM-dd'))
+    setShowRaceDetail(false)
+    setSelectedRace(null)
+    fetchRaces()
+  }, [fetchRaces])
 
   const fetchLearnStatus = useCallback(async () => {
     try {
@@ -789,6 +819,7 @@ export default function Home() {
     setPredicting(true)
     setPredictError(null)
     setPredictions([])
+    setDarkHorses([])
     setAnalysis('')
     try {
       // 馬体重入力データを整形
@@ -823,6 +854,7 @@ export default function Home() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       setPredictions(data.predictions ?? [])
+      setDarkHorses(data.darkHorses ?? [])
       setAnalysis(data.analysis ?? '')
       setPredictionMode(data.mode ?? null)
       fetchRacesForResult()
@@ -1050,9 +1082,10 @@ export default function Home() {
   }
 
   const targetDateObj = targetDate ? new Date(targetDate) : null
-  // 土曜日の場合は「5/2(土)〜5/3(日)」と表示
+  // 既定の「今週末」モードかつ土曜日のときだけ「5/2(土)〜5/3(日)」と展開表示する。
+  // 日付指定モード（viewDate あり）では入力された当日1日だけを表示する。
   const targetDateFormatted = targetDateObj
-    ? targetDateObj.getDay() === 6
+    ? (!viewDate && targetDateObj.getDay() === 6)
       ? `${format(targetDateObj, 'M月d日(E)', { locale: ja })}〜${format(new Date(targetDateObj.getTime() + 86400000), 'd日(E)', { locale: ja })}`
       : format(targetDateObj, 'M月d日(E)', { locale: ja })
     : ''
@@ -1107,6 +1140,34 @@ export default function Home() {
               <span>学習</span>
             </button>
           </div>
+        </div>
+
+        {/* 日付選択（カレンダー）＋画面リフレッシュ — 過去日のG1予想を振り返れる */}
+        <div className="max-w-md mx-auto px-4 pb-2.5 flex items-center gap-2">
+          <input
+            type="date"
+            value={inputDate}
+            onChange={(e) => setInputDate(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleRefreshByDate() }}
+            aria-label="表示する日付"
+            className="bg-[#0f1729] border border-[#1e2d4a] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-yellow-400/50 [color-scheme:dark]"
+          />
+          <button
+            onClick={handleRefreshByDate}
+            disabled={loadingRaces}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-gradient-to-r from-yellow-500 to-amber-500 text-black hover:from-yellow-400 hover:to-amber-400 transition-all disabled:opacity-50"
+          >
+            {loadingRaces ? <Spinner size={3} /> : <span>🔄</span>}
+            <span>画面リフレッシュ</span>
+          </button>
+          {viewDate && (
+            <button
+              onClick={handleClearDate}
+              className="text-[10px] text-slate-500 hover:text-slate-300 underline whitespace-nowrap"
+            >
+              今週末に戻す
+            </button>
+          )}
         </div>
       </header>
 
@@ -2469,7 +2530,7 @@ export default function Home() {
             <div className="mb-3 flex items-end justify-between">
               <div>
                 <p className="text-xs text-slate-500 mb-0.5">
-                  {targetIsToday ? '本日' : '次の'}G1/G2レース
+                  {targetIsToday ? '本日' : viewDate ? '選択日' : '次の'}G1/G2レース
                 </p>
                 <h2 className="text-xl font-bold text-white">
                   {targetDateFormatted || '読み込み中...'}
@@ -2525,12 +2586,12 @@ export default function Home() {
             ) : raceError ? (
               <div className="bg-red-900/20 border border-red-800/50 rounded-2xl p-4 text-center">
                 <p className="text-red-400 text-sm">{raceError}</p>
-                <button onClick={fetchRaces} className="mt-2 text-xs text-red-400 underline">再試行</button>
+                <button onClick={() => fetchRaces(viewDate ?? undefined)} className="mt-2 text-xs text-red-400 underline">再試行</button>
               </div>
             ) : races.length === 0 ? (
               <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-2xl p-6 text-center">
                 <p className="text-4xl mb-3">🔍</p>
-                <p className="text-slate-400 text-sm">この週のG1/G2レースは登録されていません。</p>
+                <p className="text-slate-400 text-sm">{viewDate ? 'この日' : 'この週'}のG1/G2レースは登録されていません。</p>
                 <div className="mt-3 space-y-2">
                   <button
                     onClick={handleFetchSchedule}
@@ -3086,6 +3147,38 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+
+                {/* 注目の伏兵（top5外だがモデル評価が当落線上の馬＋重賞妙味馬。的中率優先のtop5とは別枠表示） */}
+                {darkHorses.length > 0 && (
+                  <div className="mt-4 fade-in">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-orange-400">🐎</span>
+                      <p className="text-xs font-bold text-orange-400">注目の伏兵</p>
+                      <span className="text-[10px] text-slate-500">— モデル評価が当落線上（top5に次ぐ）＋重賞妙味</span>
+                    </div>
+                    <div className="space-y-2">
+                      {darkHorses.map((dh, i) => (
+                        <div key={`dh-${i}`} className="flex items-center gap-3 bg-[#0f1729] border border-orange-900/40 rounded-xl p-3">
+                          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500/30 to-amber-600/30 border border-orange-700/50 flex items-center justify-center flex-shrink-0">
+                            <span className="text-orange-300 text-base">🔥</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              {dh.horseNumber && <span className="text-xs text-slate-500 font-mono">{dh.horseNumber}番</span>}
+                              <span className="text-sm font-bold text-white truncate">{dh.horseName}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 font-bold bg-orange-500/20 text-orange-300">次点</span>
+                            </div>
+                            {dh.factors?.recentForm && (
+                              <p className="text-[10px] text-slate-400 mt-0.5 truncate">{dh.factors.recentForm}</p>
+                            )}
+                          </div>
+                          <span className="text-xs text-slate-400 font-mono flex-shrink-0">{dh.placeRate.toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-slate-600 mt-1.5">※ top5予想の的中率を下げないよう別枠表示。買い目の押さえ・3連系のヒモ向け。</p>
+                  </div>
+                )}
 
                 {/* インライン結果入力 */}
                 {(() => {
