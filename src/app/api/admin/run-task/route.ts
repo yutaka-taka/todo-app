@@ -1,19 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { spawn } from 'child_process'
 import path from 'path'
+import type { TaskKey, TaskStatus } from './types'
 
 export const dynamic = 'force-dynamic'
 
-export type TaskKey = 'weekly_update' | 'weekly_prefetch' | 'ml_dataset' | 'ml_retrain'
-
-export interface TaskStatus {
-  running: boolean
-  pid?: number
-  startedAt?: string
-  finishedAt?: string
-  exitCode?: number | null
-  lastLines: string[]
-}
+export type { TaskKey, TaskStatus }
 
 // モジュールレベルで保持（サーバー再起動でリセット）
 const taskState = new Map<TaskKey, TaskStatus>()
