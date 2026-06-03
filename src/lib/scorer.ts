@@ -288,7 +288,7 @@ function getBloodlineBonus(
 const RANK_CAPS = [55, 45, 36, 28, 23, 19, 16]
 
 // 「注目の伏兵」枠（top5外・表示専用 recall 層）のチューニング
-const DARK_BOX_SIZE = Number(process.env.DARK_BOX_SIZE ?? 4)            // 伏兵として surface する最大頭数（G1診断: box4で両連対出現88.4%/box5以降は頭打ち）
+const DARK_BOX_SIZE = Number(process.env.DARK_BOX_SIZE ?? 7)            // 伏兵として surface する最大頭数（G1診断 両連対出現: box4=88.4%/box7=92.9%/box8=95.5%。floorで実質平均は約5.5頭。残りはML11位超の大穴で本質的に不可能）
 const DARK_ML_FLOOR_RATIO = Number(process.env.DARK_ML_FLOOR_RATIO ?? 0.5) // 5番手MLのこの割合以上のML馬のみ伏兵候補（弱小頭数レースでの粗拾い防止）
 const DARK_ROT_CAP = Number(process.env.DARK_ROT_CAP ?? 12)            // ローテ妙味加点の上限（生値）
 const DARK_ROT_WEIGHT = Number(process.env.DARK_ROT_WEIGHT ?? 0.25)   // ローテ妙味の加点係数（ML主軸を崩さない小さめの値）
